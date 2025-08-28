@@ -11,7 +11,7 @@ PAIR           = "EURUSD"
 bot = Bot(token=TELEGRAM_TOKEN.strip())
 
 def get_price():
-    url = "https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency=EUR&to_currency=USD&apikey=HQELXY9SOVV9RFRO"
+    url = "https://www.alphavantage.co/query?"
     params = {
         "function": "CURRENCY_EXCHANGE_RATE",
         "from_currency": "EUR",
