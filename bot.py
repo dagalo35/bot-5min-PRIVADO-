@@ -3,15 +3,15 @@ from dotenv import load_dotenv
 from telegram import Bot
 
 load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-ALPHA_KEY      = os.getenv("ALPHA_KEY")
-CHAT_ID        = os.getenv("CHAT_ID")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN").strip()
+ALPHA_KEY      = os.getenv("ALPHA_KEY").strip()
+CHAT_ID        = os.getenv("CHAT_ID").strip()
 PAIR           = "EURUSD"
 
 bot = Bot(token=TELEGRAM_TOKEN.strip())
 
 def get_price():
-    url = "https://www.alphavantage.co/query"
+    url = "https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency=EUR&to_currency=USD&apikey=HQELXY9SOVV9RFRO"
     params = {
         "function": "CURRENCY_EXCHANGE_RATE",
         "from_currency": "EUR",
