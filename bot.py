@@ -4,18 +4,21 @@ import time
 import logging
 import sys
 import threading
+import asyncio
 import requests
 import schedule
 from dotenv import load_dotenv
 from telegram import Bot
 from flask import Flask
 
+# ---------- CONFIGURACIÓN DE LOG ----------
 logging.basicConfig(
     stream=sys.stdout,
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
+# ---------- CARGA DE VARIABLES ----------
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 ALPHA_KEY      = os.getenv("ALPHA_KEY", "").strip()
@@ -27,6 +30,7 @@ if not all([TELEGRAM_TOKEN, ALPHA_KEY, CHAT_ID]):
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
+# ---------- FUNCIÓN PARA OBTENER PRECIO ----------
 def get_price(attempts=3, backoff=2):
     url = "https://www.alphavantage.co/query"
     params = {
@@ -58,6 +62,7 @@ def get_price(attempts=3, backoff=2):
     logging.error("No se pudo obtener precio tras %s intentos", attempts)
     return None
 
+# ---------- FUNCIÓN DE TENDENCIA ----------
 def micro_trend(prices):
     if len(prices) < 3:
         return "NEUTRO"
@@ -67,6 +72,7 @@ def micro_trend(prices):
         return "PUT"
     return "NEUTRO"
 
+# ---------- FUNCIÓN PRINCIPAL ----------
 def send_signal():
     prices = []
     for _ in range(3):
@@ -94,8 +100,11 @@ def send_signal():
            f"🎯 TP: {tp:.5f}\n"
            f"❌ SL: {sl:.5f}")
 
+    async def _send_async():
+        await bot.send_message(chat_id=CHAT_ID, text=msg)
+
     try:
-        bot.send_message(chat_id=CHAT_ID, text=msg)
+        asyncio.run(_send_async())
         logging.info("Señal enviada: %s", direction)
     except Exception:
         logging.exception("Error enviando mensaje")
@@ -110,10 +119,9 @@ def ok():
 @app.route("/test")
 def test_signal():
     def _send():
-        try:
-            bot.send_message(chat_id=CHAT_ID, text="🔔 Prueba de señal funcionando")
-        except Exception:
-            logging.exception("Error en /test")
+        async def _async():
+            await bot.send_message(chat_id=CHAT_ID, text="🔔 Prueba de señal funcionando")
+        asyncio.run(_async())
     threading.Thread(target=_send, daemon=True).start()
     return "Enviado", 200
 
