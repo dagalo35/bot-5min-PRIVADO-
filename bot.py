@@ -55,7 +55,7 @@ def get_price(attempts=3, backoff=2):
                 continue
             logging.exception("HTTPError")
             return None
-        except Exception as e:
+        except Exception:
             logging.exception("Error obteniendo precio")
             return None
     logging.error("No se pudo obtener precio tras %s intentos", attempts)
@@ -113,13 +113,14 @@ def ok():
     return "ok", 200
 
 # Ruta de prueba que SIEMPRE envía un mensaje
-from threading import Thread
-
 @app.route("/test")
 def test_signal():
     def _send():
-        bot.send_message(chat_id=CHAT_ID, text="🔔 Prueba de señal funcionando")
-    Thread(target=_send).start()
+        try:
+            bot.send_message(chat_id=CHAT_ID, text="🔔 Prueba de señal funcionando")
+        except Exception:
+            logging.exception("Error en /test")
+    threading.Thread(target=_send, daemon=True).start()
     return "Enviado", 200
 
 def run_web():
