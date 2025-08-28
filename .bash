@@ -1,2 +1,3 @@
-git commit --allow-empty -m "force redeploy final"
+git add .
+git commit -m "redeploy: force clean build"
 git push origin main
