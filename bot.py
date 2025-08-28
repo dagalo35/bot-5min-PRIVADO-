@@ -1,11 +1,14 @@
+# bot.py
 import os
 import time
 import logging
 import sys
+import threading
 import requests
 import schedule
 from dotenv import load_dotenv
 from telegram import Bot
+from flask import Flask
 
 # ---------- CONFIGURACIÓN DE LOG ----------
 logging.basicConfig(
@@ -19,9 +22,7 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 ALPHA_KEY      = os.getenv("ALPHA_KEY", "").strip()
 CHAT_ID        = os.getenv("CHAT_ID", "").strip()
-PAIR           = "EURUSD"
 
-# Validación rápida
 if not all([TELEGRAM_TOKEN, ALPHA_KEY, CHAT_ID]):
     logging.error("Faltan variables de entorno.")
     sys.exit(1)
@@ -37,19 +38,15 @@ def get_price(attempts=3, backoff=2):
         "to_currency": "USD",
         "apikey": ALPHA_KEY
     }
-
     for i in range(attempts):
         try:
             r = requests.get(url, params=params, timeout=10)
             r.raise_for_status()
-
             data = r.json()
             if "Realtime Currency Exchange Rate" not in data:
                 logging.warning("Respuesta inesperada: %s", data)
                 return None
-
             return float(data["Realtime Currency Exchange Rate"]["5. Exchange Rate"])
-
         except requests.exceptions.HTTPError as e:
             if r.status_code == 429:
                 wait = (i + 1) * backoff
@@ -58,11 +55,9 @@ def get_price(attempts=3, backoff=2):
                 continue
             logging.exception("HTTPError")
             return None
-
         except Exception as e:
             logging.exception("Error obteniendo precio")
             return None
-
     logging.error("No se pudo obtener precio tras %s intentos", attempts)
     return None
 
@@ -85,7 +80,7 @@ def send_signal():
             logging.warning("Precio inválido, abortando ciclo")
             return
         prices.append(p)
-        if _ < 2:  # Pequeña pausa entre intentos
+        if _ < 2:
             time.sleep(1)
 
     direction = micro_trend(prices)
@@ -110,12 +105,26 @@ def send_signal():
     except Exception:
         logging.exception("Error enviando mensaje")
 
-# ---------- SCHEDULER ----------
-schedule.every(5).minutes.do(send_signal)
+# ---------- HEALTH WEB SERVER ----------
+app = Flask(__name__)
 
-# ---------- BUCLE INFINITO ----------
+@app.route("/")
+def ok():
+    return "ok", 200
+
+def run_web():
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, threaded=True)
+
+# ---------- ARRANQUE ----------
 if __name__ == "__main__":
     logging.info("Bot arrancado")
+
+    # Web server en un hilo aparte
+    threading.Thread(target=run_web, daemon=True).start()
+
+    # Scheduler en el hilo principal
+    schedule.every(5).minutes.do(send_signal)
     while True:
         try:
             schedule.run_pending()
