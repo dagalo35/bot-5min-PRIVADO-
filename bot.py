@@ -113,17 +113,13 @@ def ok():
     return "ok", 200
 
 def run_web():
-    port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, threaded=True)
+    port = int(os.getenv("PORT", 5000))  # <-- Railway PORT
+    app.run(host="0.0.0.0", port=port)
 
 # ---------- ARRANQUE ----------
 if __name__ == "__main__":
     logging.info("Bot arrancado")
-
-    # Web server en un hilo aparte
     threading.Thread(target=run_web, daemon=True).start()
-
-    # Scheduler en el hilo principal
     schedule.every(5).minutes.do(send_signal)
     while True:
         try:
