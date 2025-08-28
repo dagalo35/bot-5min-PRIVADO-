@@ -10,14 +10,12 @@ from dotenv import load_dotenv
 from telegram import Bot
 from flask import Flask
 
-# ---------- CONFIGURACIÓN DE LOG ----------
 logging.basicConfig(
     stream=sys.stdout,
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
-# ---------- CARGA DE VARIABLES ----------
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 ALPHA_KEY      = os.getenv("ALPHA_KEY", "").strip()
@@ -29,7 +27,6 @@ if not all([TELEGRAM_TOKEN, ALPHA_KEY, CHAT_ID]):
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# ---------- FUNCIÓN PARA OBTENER PRECIO ----------
 def get_price(attempts=3, backoff=2):
     url = "https://www.alphavantage.co/query"
     params = {
@@ -61,7 +58,6 @@ def get_price(attempts=3, backoff=2):
     logging.error("No se pudo obtener precio tras %s intentos", attempts)
     return None
 
-# ---------- FUNCIÓN DE TENDENCIA ----------
 def micro_trend(prices):
     if len(prices) < 3:
         return "NEUTRO"
@@ -71,7 +67,6 @@ def micro_trend(prices):
         return "PUT"
     return "NEUTRO"
 
-# ---------- FUNCIÓN PRINCIPAL ----------
 def send_signal():
     prices = []
     for _ in range(3):
@@ -112,7 +107,6 @@ app = Flask(__name__)
 def ok():
     return "ok", 200
 
-# Ruta de prueba que SIEMPRE envía un mensaje
 @app.route("/test")
 def test_signal():
     def _send():
@@ -128,7 +122,6 @@ def run_web():
     logging.info("Escuchando en el puerto %s", port)
     app.run(host="0.0.0.0", port=port)
 
-# ---------- ARRANQUE ----------
 if __name__ == "__main__":
     logging.info("Bot arrancado")
     threading.Thread(target=run_web, daemon=True).start()
