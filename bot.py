@@ -113,7 +113,8 @@ def ok():
     return "ok", 200
 
 def run_web():
-    port = int(os.getenv("PORT", 5000))  # <-- Railway PORT
+    port = int(os.getenv("PORT", 5000))
+    logging.info("Escuchando en el puerto %s", port)
     app.run(host="0.0.0.0", port=port)
 
 # ---------- ARRANQUE ----------
