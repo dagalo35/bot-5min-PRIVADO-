@@ -1,3 +1,3 @@
 git add bot.py
-git commit -m "fix async send_message"
+git commit -m "fix /test sync"
 git push origin main
