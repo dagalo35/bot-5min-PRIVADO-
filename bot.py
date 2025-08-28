@@ -119,10 +119,13 @@ def run_web():
 
 # ---------- ARRANQUE ----------
 # Ruta de prueba que SIEMPRE envía un mensaje
+import asyncio
+
 @app.route("/test")
 def test_signal():
-    import time
-    bot.send_message(chat_id=CHAT_ID, text="🔔 Prueba de señal funcionando")
+    asyncio.create_task(
+        bot.send_message(chat_id=CHAT_ID, text="🔔 Prueba de señal funcionando")
+    )
     return "Enviado", 200
 if __name__ == "__main__":
     logging.info("Bot arrancado")

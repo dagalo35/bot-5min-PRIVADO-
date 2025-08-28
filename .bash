@@ -1,3 +1,3 @@
 git add bot.py
-git commit -m "add /test route"
+git commit -m "fix async send_message"
 git push origin main
