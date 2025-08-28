@@ -112,21 +112,22 @@ app = Flask(__name__)
 def ok():
     return "ok", 200
 
+# Ruta de prueba que SIEMPRE envía un mensaje
+from threading import Thread
+
+@app.route("/test")
+def test_signal():
+    def _send():
+        bot.send_message(chat_id=CHAT_ID, text="🔔 Prueba de señal funcionando")
+    Thread(target=_send).start()
+    return "Enviado", 200
+
 def run_web():
     port = int(os.getenv("PORT", 5000))
     logging.info("Escuchando en el puerto %s", port)
     app.run(host="0.0.0.0", port=port)
 
 # ---------- ARRANQUE ----------
-# Ruta de prueba que SIEMPRE envía un mensaje
-import asyncio
-
-@app.route("/test")
-def test_signal():
-    asyncio.create_task(
-        bot.send_message(chat_id=CHAT_ID, text="🔔 Prueba de señal funcionando")
-    )
-    return "Enviado", 200
 if __name__ == "__main__":
     logging.info("Bot arrancado")
     threading.Thread(target=run_web, daemon=True).start()
