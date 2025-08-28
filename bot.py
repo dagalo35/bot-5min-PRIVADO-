@@ -8,7 +8,7 @@ ALPHA_KEY      = os.getenv("ALPHA_KEY")
 CHAT_ID        = os.getenv("CHAT_ID")
 PAIR           = "EURUSD"
 
-bot = Bot(token=TELEGRAM_TOKEN)
+bot = Bot(token=TELEGRAM_TOKEN.strip())
 
 def get_price():
     url = "https://www.alphavantage.co/query"
