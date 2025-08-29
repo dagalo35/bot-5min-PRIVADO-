@@ -17,11 +17,10 @@ logging.basicConfig(
 
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-ALPHA_KEY      = os.getenv("ALPHA_KEY", "").strip()
 CHAT_ID        = os.getenv("CHAT_ID", "").strip()
 
-if not all([TELEGRAM_TOKEN, ALPHA_KEY, CHAT_ID]):
-    logging.error("❌ Faltan variables de entorno.")
+if not all([TELEGRAM_TOKEN, CHAT_ID]):
+    logging.error("❌ Faltan variables de entorno: TELEGRAM_TOKEN o CHAT_ID.")
     sys.exit(1)
 
 try:
@@ -40,35 +39,21 @@ PAIRS = [
     ("AUD", "USD"),
 ]
 
-def get_price(from_curr="EUR", to_curr="USD", attempts=3, backoff=2):
-    url = "https://www.alphavantage.co/query"
-    params = {
-        "function": "CURRENCY_EXCHANGE_RATE",
-        "from_currency": from_curr,
-        "to_currency": to_curr,
-        "apikey": ALPHA_KEY
-    }
-    for i in range(attempts):
+def get_price(from_curr="EUR", to_curr="USD", attempts=3):
+    url = f"https://api.exchangerate-api.com/v4/latest/{from_curr}"
+    for _ in range(attempts):
         try:
-            r = requests.get(url, params=params, timeout=10)
+            r = requests.get(url, timeout=10)
             r.raise_for_status()
             data = r.json()
-            if "Realtime Currency Exchange Rate" not in data:
-                logging.warning("⚠️ Respuesta inesperada: %s", data)
+            rate = data["rates"].get(to_curr)
+            if rate is None:
+                logging.warning("⚠️ Par no encontrado: %s/%s", from_curr, to_curr)
                 return None
-            return float(data["Realtime Currency Exchange Rate"]["5. Exchange Rate"])
-        except requests.exceptions.HTTPError as e:
-            if r.status_code == 429:
-                wait = (i + 1) * backoff
-                logging.warning("⏳ Rate-limit 429, esperando %ss", wait)
-                time.sleep(wait)
-                continue
-            logging.exception("❌ HTTPError")
-            return None
+            return float(rate)
         except Exception:
-            logging.exception("❌ Error obteniendo precio")
-            return None
-    logging.error("❌ No se pudo obtener precio tras %s intentos", attempts)
+            logging.exception("❌ Error obteniendo precio desde exchangerate-api")
+            time.sleep(2)
     return None
 
 def micro_trend(prices):
@@ -90,8 +75,7 @@ def send_signals():
                 logging.warning("⚠️ Precio inválido para %s/%s, saltando...", base, quote)
                 break
             prices.append(p)
-            if _ < 2:
-                time.sleep(1)
+            time.sleep(1)
         else:
             direction = micro_trend(prices)
             if direction == "NEUTRO":
@@ -99,6 +83,7 @@ def send_signals():
                 continue
 
             entry = prices[-1]
+            # Ajuste de tick según la divisa
             tick_size = 0.00025 if "JPY" not in quote else 0.025
             tp = entry - tick_size if direction == "PUT" else entry + tick_size
             sl = entry + tick_size if direction == "PUT" else entry - tick_size
@@ -127,7 +112,7 @@ def ok():
 def test_signal():
     def _send():
         try:
-            bot.send_message(chat_id=CHAT_ID, text="🔔 Prueba de señal funcionando (multi-divisas)")
+            bot.send_message(chat_id=CHAT_ID, text="🔔 Prueba de señal funcionando (exchangerate-api)")
             logging.info("✅ Test enviado a Telegram")
         except Exception:
             logging.exception("❌ Error en /test")
@@ -140,7 +125,7 @@ def run_web():
     app.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
-    logging.info("🚀 Bot arrancado (multi-divisas)")
+    logging.info("🚀 Bot arrancado (exchangerate-api.com)")
     threading.Thread(target=run_web, daemon=True).start()
     schedule.every(5).minutes.do(send_signals)
     while True:
