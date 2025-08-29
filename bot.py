@@ -17,7 +17,7 @@ logging.basicConfig(
 
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-CHAT_ID        = os.getenv("CHAT_ID", "").strip()
+CHAT_ID = os.getenv("CHAT_ID", "").strip()
 
 if not all([TELEGRAM_TOKEN, CHAT_ID]):
     logging.error("❌ Faltan variables de entorno: TELEGRAM_TOKEN o CHAT_ID.")
@@ -57,25 +57,31 @@ def get_price(from_curr="EUR", to_curr="USD", attempts=3):
     return None
 
 def micro_trend(prices):
-    if len(prices) < 3:
+    """
+    Lógica más sensible:
+    - Solo necesitamos 2 precios (último vs anterior).
+    - Umbral mínimo para evitar ruido.
+    """
+    if len(prices) < 2:
         return "NEUTRO"
-    if prices[-1] > prices[-2] > prices[-3]:
-        return "CALL"
-    if prices[-1] < prices[-2] < prices[-3]:
-        return "PUT"
-    return "NEUTRO"
+    diff = abs(prices[-1] - prices[-2])
+    min_move = 0.00015 if "JPY" not in str(prices) else 0.015
+    if diff < min_move:
+        return "NEUTRO"
+    return "CALL" if prices[-1] > prices[-2] else "PUT"
 
 def send_signals():
     for base, quote in PAIRS:
         logging.info("🔍 Analizando %s/%s...", base, quote)
         prices = []
-        for _ in range(3):
+        for _ in range(2):  # Ahora solo necesitamos 2 precios
             p = get_price(from_curr=base, to_curr=quote)
             if p is None:
                 logging.warning("⚠️ Precio inválido para %s/%s, saltando...", base, quote)
                 break
             prices.append(p)
-            time.sleep(1)
+            if _ < 1:
+                time.sleep(1)
         else:
             direction = micro_trend(prices)
             if direction == "NEUTRO":
@@ -83,7 +89,6 @@ def send_signals():
                 continue
 
             entry = prices[-1]
-            # Ajuste de tick según la divisa
             tick_size = 0.00025 if "JPY" not in quote else 0.025
             tp = entry - tick_size if direction == "PUT" else entry + tick_size
             sl = entry + tick_size if direction == "PUT" else entry - tick_size
@@ -125,7 +130,7 @@ def run_web():
     app.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
-    logging.info("🚀 Bot arrancado (exchangerate-api.com)")
+    logging.info("🚀 Bot arrancado (más sensible)")
     threading.Thread(target=run_web, daemon=True).start()
     schedule.every(5).minutes.do(send_signals)
     while True:
