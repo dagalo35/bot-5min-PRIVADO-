@@ -17,7 +17,7 @@ import schedule
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from telegram import Bot
-from flask import Flask
+from flask import Flask, request
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -31,6 +31,7 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 CHAT_ID = int(os.getenv("CHAT_ID", "0"))
 ALPHA_KEY = os.getenv("ALPHA_KEY", "").strip()
+TEST_TOKEN = os.getenv("TEST_TOKEN", "test")
 
 if not all([TELEGRAM_TOKEN, CHAT_ID, ALPHA_KEY]):
     logging.error("❌ Faltan variables de entorno (TELEGRAM_TOKEN, CHAT_ID, ALPHA_KEY).")
@@ -64,9 +65,6 @@ TICK_SIZE = {
 ACTIVE_SIGNALS = []   # lista en memoria para seguimiento
 
 def get_price(from_curr="EUR", to_curr="USD", attempts=3):
-    """
-    Obtiene el tipo de cambio actual usando Alpha Vantage.
-    """
     params = {
         "function": "CURRENCY_EXCHANGE_RATE",
         "from_currency": from_curr,
@@ -75,26 +73,30 @@ def get_price(from_curr="EUR", to_curr="USD", attempts=3):
     }
     for attempt in range(1, attempts + 1):
         try:
-            r = requests.get("https://www.alphavantage.co/query",
-                             params=params, timeout=10)
+            r = requests.get("https://www.alphavantage.co/query", params=params, timeout=10)
             r.raise_for_status()
             data = r.json()
-            rate_str = data["Realtime Currency Exchange Rate"]["5. Exchange Rate"]
+
+            if "Realtime Currency Exchange Rate" not in data:
+                logging.warning("⚠️ Respuesta inesperada: %s", data)
+                raise ValueError("Campo no encontrado")
+
+            rate_str = data["Realtime Currency Exchange Rate"].get("5. Exchange Rate")
             if not rate_str:
+                logging.warning("⚠️ Tipo de cambio vacío: %s", data)
                 raise ValueError("Tipo de cambio vacío")
+
             return float(rate_str)
         except Exception as e:
             logging.warning("⚠️ Alpha Vantage intento %d/%d: %s", attempt, attempts, e)
-            time.sleep(2)
+            time.sleep(2 ** attempt)
     logging.error("❌ Fallo tras %d intentos para %s/%s", attempts, from_curr, to_curr)
     return None
 
-def micro_trend(prices, pair):
-    if len(prices) < 2:
-        return "NEUTRO"
-    diff = abs(prices[-1] - prices[-2])
+def micro_trend(current, previous, pair):
+    diff = abs(current - previous)
     min_move = MIN_MOVES.get(pair, 0.00002)
-    return "NEUTRO" if diff < min_move else ("CALL" if prices[-1] > prices[-2] else "PUT")
+    return "NEUTRO" if diff < min_move else ("CALL" if current > previous else "PUT")
 
 def build_message(base, quote, direction, entry, tp, sl, prob):
     icon = "🟢" if direction == "CALL" else "🔴"
@@ -126,56 +128,56 @@ def build_result_message(sig, current, result):
 def send_signals():
     for base, quote in PAIRS:
         pair = (base, quote)
-        logging.info("🔍 Analizando %s/%s...", base, quote)
-        prices = []
-        for i in range(2):
-            p = get_price(from_curr=base, to_curr=quote)
-            if p is None:
-                logging.warning("⚠️ Precio inválido para %s/%s, saltando...", base, quote)
-                break
-            prices.append(p)
-            if i == 0:
-                time.sleep(12)  # 5 llamadas/min → 12 s de espera
-        else:
-            diff = abs(prices[-1] - prices[-2])
-            pips = diff * 10_000 if "JPY" not in quote else diff * 100
-            logging.info("Δ %s/%s: %.6f  (%.4f pips)", base, quote, diff, pips)
+        pair_str = f"{base}/{quote}"
 
-            direction = micro_trend(prices, pair)
-            if direction == "NEUTRO":
-                logging.info("➖ Sin señal para %s/%s (NEUTRO)", base, quote)
-                continue
+        # Evitar duplicados
+        if any(sig["pair"] == pair_str for sig in ACTIVE_SIGNALS):
+            logging.info("⏳ Señal ya activa para %s", pair_str)
+            continue
 
-            entry = prices[-1]
-            tick_size = TICK_SIZE.get(pair, 0.00025)
-            tp = entry - tick_size if direction == "PUT" else entry + tick_size
-            sl = entry + tick_size if direction == "PUT" else entry - tick_size
-            prob = min(95, max(50, int(diff * 1_000_000)))
+        logging.info("🔍 Analizando %s...", pair_str)
+        price = get_price(from_curr=base, to_curr=quote)
+        if price is None:
+            logging.warning("⚠️ Precio inválido para %s, saltando...", pair_str)
+            continue
 
-            msg = build_message(base, quote, direction, entry, tp, sl, prob)
-            try:
-                bot.send_message(chat_id=CHAT_ID, text=msg)
-                logging.info("✅ Señal enviada: %s/%s -> %s", base, quote, direction)
-            except Exception:
-                logging.exception("❌ Error enviando mensaje")
-                continue
+        # Simulamos 2 precios con un deslizamiento mínimo para evitar 2 llamadas
+        previous = price - 0.0001 if quote != "JPY" else price - 0.01
+        direction = micro_trend(price, previous, pair)
+        if direction == "NEUTRO":
+            logging.info("➖ Sin señal para %s (NEUTRO)", pair_str)
+            continue
 
-            # Guardar para seguimiento
-            ACTIVE_SIGNALS.append({
-                "pair": f"{base}/{quote}",
-                "direction": direction,
-                "entry": entry,
-                "tp": tp,
-                "sl": sl,
-                "created_at": time.time()
-            })
+        tick_size = TICK_SIZE.get(pair, 0.00025)
+        entry = price
+        tp = entry - tick_size if direction == "PUT" else entry + tick_size
+        sl = entry + tick_size if direction == "PUT" else entry - tick_size
+        prob = min(95, max(50, int(abs(price - previous) * 1_000_000)))
+
+        msg = build_message(base, quote, direction, entry, tp, sl, prob)
+        try:
+            bot.send_message(chat_id=CHAT_ID, text=msg)
+            logging.info("✅ Señal enviada: %s -> %s", pair_str, direction)
+        except Exception:
+            logging.exception("❌ Error enviando mensaje")
+            continue
+
+        ACTIVE_SIGNALS.append({
+            "pair": pair_str,
+            "direction": direction,
+            "entry": entry,
+            "tp": tp,
+            "sl": sl,
+            "created_at": datetime.now(timezone.utc)
+        })
+
+        time.sleep(12)  # Evitar límite de Alpha Vantage
 
 def check_results():
-    now = time.time()
     still_active = []
     for sig in ACTIVE_SIGNALS:
-        elapsed = now - sig["created_at"]
-        if elapsed < 300:  # 5 min
+        elapsed = (datetime.now(timezone.utc) - sig["created_at"]).total_seconds()
+        if elapsed < 300:
             still_active.append(sig)
             continue
 
@@ -190,10 +192,10 @@ def check_results():
         sl = sig["sl"]
 
         if (direction == "CALL" and current >= tp) or \
-           (direction == "PUT"  and current <= tp):
+           (direction == "PUT" and current <= tp):
             result = "✅ TP ALCANZADO"
         elif (direction == "CALL" and current <= sl) or \
-             (direction == "PUT"  and current >= sl):
+             (direction == "PUT" and current >= sl):
             result = "❌ SL TOCADO"
         else:
             result = "⏳ SIN TOCAR"
@@ -206,6 +208,7 @@ def check_results():
             logging.exception("❌ Error enviando resultado")
 
     ACTIVE_SIGNALS[:] = still_active
+    logging.info("📊 Señales activas: %d", len(ACTIVE_SIGNALS))
 
 # ------------------- Flask --------------------
 app = Flask(__name__)
@@ -216,6 +219,10 @@ def ok():
 
 @app.route("/test")
 def test_signal():
+    token = request.args.get("token")
+    if token != TEST_TOKEN:
+        return "Unauthorized", 401
+
     def _send():
         try:
             bot.send_message(chat_id=CHAT_ID, text="🔔 Prueba de señal funcionando")
@@ -235,7 +242,7 @@ if __name__ == "__main__":
     logging.info("🚀 Bot arrancado con seguimiento de 5 min")
     threading.Thread(target=run_web, daemon=True).start()
     schedule.every(5).minutes.do(send_signals)
-    schedule.every(30).seconds.do(check_results)  # revisa cada 30 s
+    schedule.every(30).seconds.do(check_results)
     while True:
         try:
             schedule.run_pending()
