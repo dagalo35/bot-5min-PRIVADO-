@@ -91,12 +91,8 @@ def send_signals():
             prob = min(95, max(50, int(diff * 1_000_000)))
 
             # Íconos y colores
-            if direction == "CALL":
-                icon = "🟢"
-                color = "📈"
-            else:
-                icon = "🔴"
-                color = "📉"
+            icon  = "🟢" if direction == "CALL" else "🔴"
+            color = "📈" if direction == "CALL" else "📉"
 
             msg = (
                 f"{icon} **SEÑAL {base}/{quote}**\n"
