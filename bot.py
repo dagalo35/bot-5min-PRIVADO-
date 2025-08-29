@@ -1,3 +1,13 @@
+"""
+Bot de señales FX 5 min
+Incluye:
+  - URL sin espacio
+  - Log de pips
+  - min_move configurable
+  - Zona horaria UTC
+  - Refactor de mensaje
+"""
+
 import os
 import time
 import logging
@@ -5,6 +15,7 @@ import sys
 import threading
 import requests
 import schedule
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from telegram import Bot
 from flask import Flask
@@ -38,72 +49,94 @@ PAIRS = [
     ("AUD", "USD"),
 ]
 
+# ---------------- CONFIGURABLE ----------------
+MIN_MOVES = {
+    # (base, quote) : min_move
+    ("EUR", "USD"): float(os.getenv("MIN_MOVE_EURUSD", 0.00002)),
+    ("GBP", "USD"): float(os.getenv("MIN_MOVE_GBPUSD", 0.00002)),
+    ("USD", "JPY"): float(os.getenv("MIN_MOVE_USDJPY", 0.002)),
+    ("AUD", "USD"): float(os.getenv("MIN_MOVE_AUDUSD", 0.00002)),
+}
+TICK_SIZE = {
+    ("EUR", "USD"): float(os.getenv("TICK_EURUSD", 0.00025)),
+    ("GBP", "USD"): float(os.getenv("TICK_GBPUSD", 0.00025)),
+    ("USD", "JPY"): float(os.getenv("TICK_USDJPY", 0.025)),
+    ("AUD", "USD"): float(os.getenv("TICK_AUDUSD", 0.00025)),
+}
+# ---------------------------------------------
+
 def get_price(from_curr="EUR", to_curr="USD", attempts=3):
     url = f"https://api.exchangerate-api.com/v4/latest/{from_curr}"
-    for _ in range(attempts):
+    for attempt in range(1, attempts + 1):
         try:
             r = requests.get(url, timeout=10)
             r.raise_for_status()
-            data = r.json()
-            rate = data["rates"].get(to_curr)
+            rate = r.json()["rates"].get(to_curr)
             if rate is None:
                 logging.warning("⚠️ Par no encontrado: %s/%s", from_curr, to_curr)
                 return None
             return float(rate)
-        except Exception:
-            logging.exception("❌ Error obteniendo precio")
+        except requests.exceptions.RequestException as e:
+            logging.warning("⚠️ Intentando %s/%s – intento %d/%d: %s",
+                            from_curr, to_curr, attempt, attempts, e)
             time.sleep(2)
+    logging.error("❌ Fallo tras %d intentos para %s/%s", attempts, from_curr, to_curr)
     return None
 
 def micro_trend(prices, pair):
     if len(prices) < 2:
         return "NEUTRO"
     diff = abs(prices[-1] - prices[-2])
-    min_move = 0.00005 if "JPY" not in pair else 0.005
+    min_move = MIN_MOVES.get(pair, 0.00002)
     if diff < min_move:
         return "NEUTRO"
     return "CALL" if prices[-1] > prices[-2] else "PUT"
 
+def build_message(base, quote, direction, entry, tp, sl, prob):
+    icon  = "🟢" if direction == "CALL" else "🔴"
+    color = "📈" if direction == "CALL" else "📉"
+    now   = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    return (
+        f"{icon} **SEÑAL {base}/{quote}**\n"
+        f"⏰ Hora: {now}\n"
+        f"{color} **Dirección: {direction}**\n"
+        f"💰 Entrada: ≤ {entry:.5f}\n"
+        f"🎯 TP: {tp:.5f}\n"
+        f"❌ SL: {sl:.5f}\n"
+        f"📊 Probabilidad: ~{prob} %"
+    )
+
 def send_signals():
     for base, quote in PAIRS:
+        pair = (base, quote)
         logging.info("🔍 Analizando %s/%s...", base, quote)
         prices = []
-        for _ in range(2):
+        for i in range(2):
             p = get_price(from_curr=base, to_curr=quote)
             if p is None:
                 logging.warning("⚠️ Precio inválido para %s/%s, saltando...", base, quote)
                 break
             prices.append(p)
-            if _ < 1:
+            if i == 0:
                 time.sleep(1)
         else:
-            direction = micro_trend(prices, f"{base}/{quote}")
+            diff = abs(prices[-1] - prices[-2])
+            pips = diff * 10_000 if "JPY" not in quote else diff * 100
+            logging.info("Δ %s/%s: %.6f  (%.2f pips)", base, quote, diff, pips)
+
+            direction = micro_trend(prices, pair)
             if direction == "NEUTRO":
                 logging.info("➖ Sin señal para %s/%s (NEUTRO)", base, quote)
                 continue
 
-            entry = prices[-1]
-            tick_size = 0.00025 if "JPY" not in quote else 0.025
+            entry     = prices[-1]
+            tick_size = TICK_SIZE.get(pair, 0.00025)
             tp = entry - tick_size if direction == "PUT" else entry + tick_size
             sl = entry + tick_size if direction == "PUT" else entry - tick_size
 
-            diff = abs(prices[-1] - prices[-2])
             prob = min(95, max(50, int(diff * 1_000_000)))
 
-            # Íconos y colores
-            icon  = "🟢" if direction == "CALL" else "🔴"
-            color = "📈" if direction == "CALL" else "📉"
-
-            msg = (
-                f"{icon} **SEÑAL {base}/{quote}**\n"
-                f"⏰ Hora: {time.strftime('%H:%M:%S')}\n"
-                f"{color} **Dirección: {direction}**\n"
-                f"💰 Entrada: ≤ {entry:.5f}\n"
-                f"🎯 TP: {tp:.5f}\n"
-                f"❌ SL: {sl:.5f}\n"
-                f"📊 Probabilidad: ~{prob} %"
-            )
-
+            msg = build_message(base, quote, direction, entry, tp, sl, prob)
             try:
                 bot.send_message(chat_id=CHAT_ID, text=msg)
                 logging.info("✅ Señal enviada: %s/%s -> %s", base, quote, direction)
@@ -133,7 +166,7 @@ def run_web():
     app.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
-    logging.info("🚀 Bot arrancado (versión final)")
+    logging.info("🚀 Bot arrancado (versión mejorada)")
     threading.Thread(target=run_web, daemon=True).start()
     schedule.every(5).minutes.do(send_signals)
     while True:
