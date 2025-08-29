@@ -46,18 +46,19 @@ PAIRS = [
     ("AUD", "USD"),
 ]
 
+# Valores mejorados para reducir pérdidas
 MIN_MOVES = {
-    ("EUR", "USD"): float(os.getenv("MIN_MOVE_EURUSD", 0.00002)),
-    ("GBP", "USD"): float(os.getenv("MIN_MOVE_GBPUSD", 0.00002)),
-    ("USD", "JPY"): float(os.getenv("MIN_MOVE_USDJPY", 0.002)),
-    ("AUD", "USD"): float(os.getenv("MIN_MOVE_AUDUSD", 0.00002)),
+    ("EUR", "USD"): float(os.getenv("MIN_MOVE_EURUSD", 0.00004)),
+    ("GBP", "USD"): float(os.getenv("MIN_MOVE_GBPUSD", 0.00004)),
+    ("USD", "JPY"): float(os.getenv("MIN_MOVE_USDJPY", 0.004)),
+    ("AUD", "USD"): float(os.getenv("MIN_MOVE_AUDUSD", 0.00004)),
 }
 
 TICK_SIZE = {
-    ("EUR", "USD"): float(os.getenv("TICK_EURUSD", 0.00025)),
-    ("GBP", "USD"): float(os.getenv("TICK_GBPUSD", 0.00025)),
-    ("USD", "JPY"): float(os.getenv("TICK_USDJPY", 0.025)),
-    ("AUD", "USD"): float(os.getenv("TICK_AUDUSD", 0.00025)),
+    ("EUR", "USD"): float(os.getenv("TICK_EURUSD", 0.00050)),
+    ("GBP", "USD"): float(os.getenv("TICK_GBPUSD", 0.00050)),
+    ("USD", "JPY"): float(os.getenv("TICK_USDJPY", 0.050)),
+    ("AUD", "USD"): float(os.getenv("TICK_AUDUSD", 0.00050)),
 }
 
 ACTIVE_SIGNALS = []
@@ -87,7 +88,7 @@ def get_price(from_curr="EUR", to_curr="USD", attempts=3):
 
 def micro_trend(current, previous, pair):
     diff = abs(current - previous)
-    min_move = MIN_MOVES.get(pair, 0.00002)
+    min_move = MIN_MOVES.get(pair, 0.00004)
     return "NEUTRO" if diff < min_move else ("COMPRAR" if current > previous else "VENDER")
 
 def build_message(base, quote, direction, entry, tp, sl, prob):
@@ -145,7 +146,7 @@ def send_signals():
         if direction == "NEUTRO":
             continue
 
-        tick_size = TICK_SIZE.get(pair, 0.00025)
+        tick_size = TICK_SIZE.get(pair, 0.00050)
         entry = price
         tp = entry + tick_size if direction == "COMPRAR" else entry - tick_size
         sl = entry - tick_size if direction == "COMPRAR" else entry + tick_size
@@ -161,7 +162,7 @@ def send_signals():
                 "tp": tp,
                 "sl": sl,
                 "created_at": datetime.now(timezone.utc),
-                "message_id": sent.message_id  # 👈 Guardamos el ID
+                "message_id": sent.message_id
             })
         except Exception:
             logging.exception("❌ Error enviando señal")
