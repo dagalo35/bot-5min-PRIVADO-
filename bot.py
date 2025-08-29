@@ -3,7 +3,7 @@ Bot de señales FX 5 min – Perú
 - Alpha Vantage en tiempo real
 - Rangos amplios para reducir empates
 - Hora local (Lima)
-- Persistencia en disco
+- Persistencia en disco (signals.json)
 - Resultados como respuesta al mensaje original
 """
 
@@ -20,12 +20,13 @@ from datetime import datetime
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
-    from backports.zoneinfo import ZoneInfo
+    from backports.zoneinfo import ZoneInfo  # Python < 3.9
 
 from dotenv import load_dotenv
 from telegram import Bot
 from flask import Flask, request
 
+# Configuración de logs
 logging.basicConfig(
     stream=sys.stdout,
     level=logging.INFO,
@@ -34,6 +35,7 @@ logging.basicConfig(
 
 load_dotenv()
 
+# Tokens y variables de entorno
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 CHAT_ID = int(os.getenv("CHAT_ID", "0"))
 ALPHA_KEY = os.getenv("ALPHA_KEY", "").strip()
@@ -45,6 +47,7 @@ if not all([TELEGRAM_TOKEN, CHAT_ID, ALPHA_KEY]):
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
+# Pares a monitorear
 PAIRS = [
     ("EUR", "USD"),
     ("GBP", "USD"),
@@ -70,6 +73,7 @@ TICK_SIZE = {
 TZ_PERU = ZoneInfo("America/Lima")
 SIGNAL_FILE = "signals.json"
 
+# Carga / guarda señales
 def load_signals():
     if os.path.exists(SIGNAL_FILE):
         with open(SIGNAL_FILE) as f:
@@ -82,6 +86,7 @@ def save_signals():
 
 ACTIVE_SIGNALS = load_signals()
 
+# Obtener precio desde Alpha Vantage
 def get_price(from_curr="EUR", to_curr="USD", attempts=3):
     params = {
         "function": "CURRENCY_EXCHANGE_RATE",
@@ -95,21 +100,22 @@ def get_price(from_curr="EUR", to_curr="USD", attempts=3):
             r.raise_for_status()
             data = r.json()
             if "Realtime Currency Exchange Rate" not in data:
-                raise ValueError("Campo no encontrado")
+                logging.warning("Respuesta inesperada: %s", data)
+                return None
             rate_str = data["Realtime Currency Exchange Rate"]["5. Exchange Rate"]
-            if not rate_str:
-                raise ValueError("Tipo de cambio vacío")
             return float(rate_str)
         except Exception as e:
-            logging.warning("⚠️ Alpha Vantage intento %d/%d: %s", attempt, attempts, e)
+            logging.warning("Alpha Vantage intento %d/%d: %s", attempt, attempts, e)
             time.sleep(2 ** attempt)
     return None
 
+# Determina dirección
 def micro_trend(current, previous, pair):
     diff = abs(current - previous)
     min_move = MIN_MOVES.get(pair, 0.00006)
     return "NEUTRO" if diff < min_move else ("COMPRAR" if current > previous else "VENDER")
 
+# Construye texto de señal
 def build_message(base, quote, direction, entry, tp, sl, prob):
     icon = "🟢" if direction == "COMPRAR" else "🔴"
     now = datetime.now(TZ_PERU).strftime("%H:%M:%S")
@@ -123,19 +129,18 @@ def build_message(base, quote, direction, entry, tp, sl, prob):
         f"📈 Probabilidad: ~{prob}%"
     )
 
+# Construye texto de resultado
 def build_result_message(sig, current):
     direction = sig["direction"]
     entry = sig["entry"]
     tp = sig["tp"]
     sl = sig["sl"]
-
     if (direction == "COMPRAR" and current >= tp) or (direction == "VENDER" and current <= tp):
         result = "✅ GANADA"
     elif (direction == "COMPRAR" and current <= sl) or (direction == "VENDER" and current >= sl):
         result = "❌ PERDIDA"
     else:
         result = "⚖️ EMPATE"
-
     now = datetime.now(TZ_PERU).strftime("%H:%M:%S")
     return (
         f"📊 **RESULTADO {sig['pair']}**\n"
@@ -148,11 +153,10 @@ def build_result_message(sig, current):
         f"{result}"
     )
 
+# Envía señales cada 5 minutos
 def send_signals():
     for base, quote in PAIRS:
-        pair = (base, quote)
         pair_str = f"{base}/{quote}"
-
         if any(sig["pair"] == pair_str for sig in ACTIVE_SIGNALS):
             continue
 
@@ -161,11 +165,11 @@ def send_signals():
             continue
 
         previous = price - 0.0001 if quote != "JPY" else price - 0.01
-        direction = micro_trend(price, previous, pair)
+        direction = micro_trend(price, previous, (base, quote))
         if direction == "NEUTRO":
             continue
 
-        tick_size = TICK_SIZE.get(pair, 0.00080)
+        tick_size = TICK_SIZE.get((base, quote), 0.00080)
         entry = price
         tp = entry + tick_size if direction == "COMPRAR" else entry - tick_size
         sl = entry - tick_size if direction == "COMPRAR" else entry + tick_size
@@ -188,6 +192,7 @@ def send_signals():
             logging.exception("❌ Error enviando señal")
         time.sleep(12)
 
+# Chequea resultados cada 30 s
 def check_results():
     still_active = []
     for sig in ACTIVE_SIGNALS:
@@ -215,6 +220,7 @@ def check_results():
     ACTIVE_SIGNALS[:] = still_active
     save_signals()
 
+# Flask para health-check
 app = Flask(__name__)
 
 @app.route("/")
@@ -233,6 +239,7 @@ def run_web():
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port, threaded=True)
 
+# Inicio
 if __name__ == "__main__":
     logging.info("🚀 Bot arrancado con hora de Perú y seguimiento de 5 min")
     threading.Thread(target=run_web, daemon=True).start()
