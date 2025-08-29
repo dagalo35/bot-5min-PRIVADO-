@@ -20,7 +20,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 CHAT_ID        = os.getenv("CHAT_ID", "").strip()
 
 if not all([TELEGRAM_TOKEN, CHAT_ID]):
-    logging.error("❌ Faltan variables de entorno: TELEGRAM_TOKEN o CHAT_ID.")
+    logging.error("❌ Faltan variables de entorno.")
     sys.exit(1)
 
 try:
@@ -31,7 +31,6 @@ except ValueError:
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# ---------- CONFIGURACIÓN DE DIVISAS ----------
 PAIRS = [
     ("EUR", "USD"),
     ("GBP", "USD"),
@@ -57,7 +56,6 @@ def get_price(from_curr="EUR", to_curr="USD", attempts=3):
     return None
 
 def micro_trend(prices, pair):
-    """Lógica sensible: 2 precios + umbral dinámico"""
     if len(prices) < 2:
         return "NEUTRO"
     diff = abs(prices[-1] - prices[-2])
@@ -89,12 +87,26 @@ def send_signals():
             tp = entry - tick_size if direction == "PUT" else entry + tick_size
             sl = entry + tick_size if direction == "PUT" else entry - tick_size
 
-            msg = (f"🔔 Señal {base}/{quote} 5 min\n"
-                   f"⏰ Hora: {time.strftime('%H:%M:%S')}\n"
-                   f"📊 Dirección: {direction}\n"
-                   f"💰 Entrada: ≤ {entry:.5f}\n"
-                   f"🎯 TP: {tp:.5f}\n"
-                   f"❌ SL: {sl:.5f}")
+            diff = abs(prices[-1] - prices[-2])
+            prob = min(95, max(50, int(diff * 1_000_000)))
+
+            # Íconos y colores
+            if direction == "CALL":
+                icon = "🟢"
+                color = "📈"
+            else:
+                icon = "🔴"
+                color = "📉"
+
+            msg = (
+                f"{icon} **SEÑAL {base}/{quote}**\n"
+                f"⏰ Hora: {time.strftime('%H:%M:%S')}\n"
+                f"{color} **Dirección: {direction}**\n"
+                f"💰 Entrada: ≤ {entry:.5f}\n"
+                f"🎯 TP: {tp:.5f}\n"
+                f"❌ SL: {sl:.5f}\n"
+                f"📊 Probabilidad: ~{prob} %"
+            )
 
             try:
                 bot.send_message(chat_id=CHAT_ID, text=msg)
@@ -102,7 +114,6 @@ def send_signals():
             except Exception:
                 logging.exception("❌ Error enviando mensaje")
 
-# ---------- HEALTH WEB SERVER ----------
 app = Flask(__name__)
 
 @app.route("/")
@@ -126,7 +137,7 @@ def run_web():
     app.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
-    logging.info("🚀 Bot arrancado (umbral bajo)")
+    logging.info("🚀 Bot arrancado (versión final)")
     threading.Thread(target=run_web, daemon=True).start()
     schedule.every(5).minutes.do(send_signals)
     while True:
