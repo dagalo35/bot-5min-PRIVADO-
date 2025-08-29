@@ -3,7 +3,7 @@ Bot de señales FX 5 min
 - Alpha Vantage para precios en tiempo real
 - Log de pips con 4 decimales
 - min_move y tick_size configurables
-- Zona horaria UTC
+- Hora local de Perú (America/Lima)
 - Seguimiento de resultados a los 5 minutos
 - Resultados como respuesta al mensaje original
 """
@@ -15,7 +15,13 @@ import sys
 import threading
 import requests
 import schedule
-from datetime import datetime, timezone
+from datetime import datetime
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo  # Para Python < 3.9
+
 from dotenv import load_dotenv
 from telegram import Bot
 from flask import Flask, request
@@ -63,6 +69,8 @@ TICK_SIZE = {
 
 ACTIVE_SIGNALS = []
 
+TZ_PERU = ZoneInfo("America/Lima")
+
 def get_price(from_curr="EUR", to_curr="USD", attempts=3):
     params = {
         "function": "CURRENCY_EXCHANGE_RATE",
@@ -93,7 +101,7 @@ def micro_trend(current, previous, pair):
 
 def build_message(base, quote, direction, entry, tp, sl, prob):
     icon = "🟢" if direction == "COMPRAR" else "🔴"
-    now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    now = datetime.now(TZ_PERU).strftime("%H:%M:%S")
     return (
         f"{icon} **SEÑAL {base}/{quote}**\n"
         f"⏰ Hora: {now}\n"
@@ -117,7 +125,7 @@ def build_result_message(sig, current):
     else:
         result = "⚖️ EMPATE"
 
-    now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    now = datetime.now(TZ_PERU).strftime("%H:%M:%S")
     return (
         f"📊 **RESULTADO {sig['pair']}**\n"
         f"⏰ Hora: {now}\n"
@@ -161,7 +169,7 @@ def send_signals():
                 "entry": entry,
                 "tp": tp,
                 "sl": sl,
-                "created_at": datetime.now(timezone.utc),
+                "created_at": datetime.now(TZ_PERU),
                 "message_id": sent.message_id
             })
         except Exception:
@@ -172,7 +180,7 @@ def send_signals():
 def check_results():
     still_active = []
     for sig in ACTIVE_SIGNALS:
-        elapsed = (datetime.now(timezone.utc) - sig["created_at"]).total_seconds()
+        elapsed = (datetime.now(TZ_PERU) - sig["created_at"]).total_seconds()
         if elapsed < 300:
             still_active.append(sig)
             continue
@@ -214,7 +222,7 @@ def run_web():
     app.run(host="0.0.0.0", port=port, threaded=True)
 
 if __name__ == "__main__":
-    logging.info("🚀 Bot arrancado con seguimiento de 5 min")
+    logging.info("🚀 Bot arrancado con hora de Perú y seguimiento de 5 min")
     threading.Thread(target=run_web, daemon=True).start()
     schedule.every(5).minutes.do(send_signals)
     schedule.every(30).seconds.do(check_results)
