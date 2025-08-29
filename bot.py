@@ -17,11 +17,11 @@ logging.basicConfig(
 
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-ALPHA_KEY = os.getenv("ALPHA_KEY", "").strip()
-CHAT_ID = os.getenv("CHAT_ID", "").strip()
+ALPHA_KEY      = os.getenv("ALPHA_KEY", "").strip()
+CHAT_ID        = os.getenv("CHAT_ID", "").strip()
 
 if not all([TELEGRAM_TOKEN, ALPHA_KEY, CHAT_ID]):
-    logging.error("❌ Faltan variables de entorno: TELEGRAM_TOKEN, ALPHA_KEY o CHAT_ID.")
+    logging.error("❌ Faltan variables de entorno.")
     sys.exit(1)
 
 try:
@@ -32,12 +32,20 @@ except ValueError:
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-def get_price(attempts=3, backoff=2):
+# ---------- CONFIGURACIÓN DE DIVISAS ----------
+PAIRS = [
+    ("EUR", "USD"),
+    ("GBP", "USD"),
+    ("USD", "JPY"),
+    ("AUD", "USD"),
+]
+
+def get_price(from_curr="EUR", to_curr="USD", attempts=3, backoff=2):
     url = "https://www.alphavantage.co/query"
     params = {
         "function": "CURRENCY_EXCHANGE_RATE",
-        "from_currency": "EUR",
-        "to_currency": "USD",
+        "from_currency": from_curr,
+        "to_currency": to_curr,
         "apikey": ALPHA_KEY
     }
     for i in range(attempts):
@@ -72,40 +80,41 @@ def micro_trend(prices):
         return "PUT"
     return "NEUTRO"
 
-def send_signal():
-    logging.info("🔍 Iniciando ciclo de análisis de señal...")
-    prices = []
-    for i in range(3):
-        p = get_price()
-        if p is None:
-            logging.warning("⚠️ Precio inválido, abortando ciclo")
-            return
-        prices.append(p)
-        if i < 2:
-            time.sleep(1)
+def send_signals():
+    for base, quote in PAIRS:
+        logging.info("🔍 Analizando %s/%s...", base, quote)
+        prices = []
+        for _ in range(3):
+            p = get_price(from_curr=base, to_curr=quote)
+            if p is None:
+                logging.warning("⚠️ Precio inválido para %s/%s, saltando...", base, quote)
+                break
+            prices.append(p)
+            if _ < 2:
+                time.sleep(1)
+        else:
+            direction = micro_trend(prices)
+            if direction == "NEUTRO":
+                logging.info("➖ Sin señal para %s/%s (NEUTRO)", base, quote)
+                continue
 
-    direction = micro_trend(prices)
-    if direction == "NEUTRO":
-        logging.info("➖ Sin señal (NEUTRO)")
-        return
+            entry = prices[-1]
+            tick_size = 0.00025 if "JPY" not in quote else 0.025
+            tp = entry - tick_size if direction == "PUT" else entry + tick_size
+            sl = entry + tick_size if direction == "PUT" else entry - tick_size
 
-    entry = prices[-1]
-    tp = entry - 0.00025 if direction == "PUT" else entry + 0.00025
-    sl = entry + 0.00025 if direction == "PUT" else entry - 0.00025
+            msg = (f"🔔 Señal {base}/{quote} 5 min\n"
+                   f"⏰ Hora: {time.strftime('%H:%M:%S')}\n"
+                   f"📊 Dirección: {direction}\n"
+                   f"💰 Entrada: ≤ {entry:.5f}\n"
+                   f"🎯 TP: {tp:.5f}\n"
+                   f"❌ SL: {sl:.5f}")
 
-    msg = (f"🔔 Señal EUR/USD 5 min\n"
-           f"⏰ Hora: {time.strftime('%H:%M:%S')}\n"
-           f"📊 Dirección: {direction}\n"
-           f"💰 Entrada: ≤ {entry:.5f}\n"
-           f"🎯 TP: {tp:.5f}\n"
-           f"❌ SL: {sl:.5f}")
-
-    try:
-        logging.info("📤 Enviando señal a Telegram: %s", direction)
-        bot.send_message(chat_id=CHAT_ID, text=msg)
-        logging.info("✅ Señal enviada: %s", direction)
-    except Exception:
-        logging.exception("❌ Error enviando mensaje")
+            try:
+                bot.send_message(chat_id=CHAT_ID, text=msg)
+                logging.info("✅ Señal enviada: %s/%s -> %s", base, quote, direction)
+            except Exception:
+                logging.exception("❌ Error enviando mensaje para %s/%s", base, quote)
 
 # ---------- HEALTH WEB SERVER ----------
 app = Flask(__name__)
@@ -118,7 +127,7 @@ def ok():
 def test_signal():
     def _send():
         try:
-            bot.send_message(chat_id=CHAT_ID, text="🔔 Prueba de señal funcionando")
+            bot.send_message(chat_id=CHAT_ID, text="🔔 Prueba de señal funcionando (multi-divisas)")
             logging.info("✅ Test enviado a Telegram")
         except Exception:
             logging.exception("❌ Error en /test")
@@ -131,9 +140,9 @@ def run_web():
     app.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
-    logging.info("🚀 Bot arrancado")
+    logging.info("🚀 Bot arrancado (multi-divisas)")
     threading.Thread(target=run_web, daemon=True).start()
-    schedule.every(5).minutes.do(send_signal)
+    schedule.every(5).minutes.do(send_signals)
     while True:
         try:
             schedule.run_pending()
