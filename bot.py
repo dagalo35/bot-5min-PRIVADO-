@@ -77,8 +77,14 @@ def get_price(from_curr="EUR", to_curr="USD", attempts=3):
                              params=params, timeout=10)
             r.raise_for_status()
             data = r.json()
-            rate = float(data["Realtime Currency Exchange Rate"]["5. Exchange Rate"])
-            return rate
+
+            # Debugging: imprimir respuesta si falla
+            logging.debug("Alpha respuesta: %s", data)
+
+            rate_str = data["Realtime Currency Exchange Rate"]["5. Exchange Rate"]
+            if not rate_str:
+                raise ValueError("Tipo de cambio vacío")
+            return float(rate_str)
         except Exception as e:
             logging.warning("⚠️ Alpha Vantage intento %d/%d: %s", attempt, attempts, e)
             time.sleep(2)
@@ -118,7 +124,7 @@ def send_signals():
                 break
             prices.append(p)
             if i == 0:
-                time.sleep(1)  # Alpha Vantage admite 1 llamada/s
+                time.sleep(12)  # Alpha Vantage gratis: 5 llamadas/min → 12 s entre cada una
         else:
             diff = abs(prices[-1] - prices[-2])
             pips = diff * 10_000 if "JPY" not in quote else diff * 100
