@@ -1,12 +1,9 @@
 """
 Bot de señales FX 5 min
-Incluye:
-  - URL sin espacio
-  - Log de pips
-  - min_move configurable
-  - Zona horaria UTC
-  - Refactor de mensaje
-  - 30 s entre muestras para evitar precios iguales
+- Alpha Vantage para precios en tiempo real
+- Log de pips con 4 decimales
+- min_move y tick_size configurables
+- Zona horaria UTC
 """
 
 import os
@@ -28,17 +25,14 @@ logging.basicConfig(
 )
 
 load_dotenv()
+
+# Tokens y variables de entorno
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-CHAT_ID = os.getenv("CHAT_ID", "").strip()
+CHAT_ID        = int(os.getenv("CHAT_ID", "0"))
+ALPHA_KEY      = os.getenv("ALPHA_KEY", "").strip()
 
-if not all([TELEGRAM_TOKEN, CHAT_ID]):
-    logging.error("❌ Faltan variables de entorno.")
-    sys.exit(1)
-
-try:
-    CHAT_ID = int(CHAT_ID)
-except ValueError:
-    logging.error("❌ CHAT_ID debe ser un número entero.")
+if not all([TELEGRAM_TOKEN, CHAT_ID, ALPHA_KEY]):
+    logging.error("❌ Faltan variables de entorno (TELEGRAM_TOKEN, CHAT_ID, ALPHA_KEY).")
     sys.exit(1)
 
 bot = Bot(token=TELEGRAM_TOKEN)
@@ -52,12 +46,12 @@ PAIRS = [
 
 # ---------------- CONFIGURABLE ----------------
 MIN_MOVES = {
-    # (base, quote) : min_move
     ("EUR", "USD"): float(os.getenv("MIN_MOVE_EURUSD", 0.00002)),
     ("GBP", "USD"): float(os.getenv("MIN_MOVE_GBPUSD", 0.00002)),
     ("USD", "JPY"): float(os.getenv("MIN_MOVE_USDJPY", 0.002)),
     ("AUD", "USD"): float(os.getenv("MIN_MOVE_AUDUSD", 0.00002)),
 }
+
 TICK_SIZE = {
     ("EUR", "USD"): float(os.getenv("TICK_EURUSD", 0.00025)),
     ("GBP", "USD"): float(os.getenv("TICK_GBPUSD", 0.00025)),
@@ -67,21 +61,26 @@ TICK_SIZE = {
 # ---------------------------------------------
 
 def get_price(from_curr="EUR", to_curr="USD", attempts=3):
-    url = f"https://api.exchangerate-api.com/v4/latest/{from_curr}"
+    """
+    Obtiene el tipo de cambio actual usando Alpha Vantage.
+    https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE
+    """
+    params = {
+        "function": "CURRENCY_EXCHANGE_RATE",
+        "from_currency": from_curr,
+        "to_currency": to_curr,
+        "apikey": ALPHA_KEY
+    }
     for attempt in range(1, attempts + 1):
         try:
-            r = requests.get(url, timeout=10)
+            r = requests.get("https://www.alphavantage.co/query",
+                             params=params, timeout=10)
             r.raise_for_status()
-            rate = r.json()["rates"].get(to_curr)
-            if rate is None:
-                logging.warning("⚠️ Par no encontrado: %s/%s", from_curr, to_curr)
-                return None
-            return float(rate)
-        except requests.exceptions.RequestException as e:
-            logging.warning(
-                "⚠️ Intentando %s/%s – intento %d/%d: %s",
-                from_curr, to_curr, attempt, attempts, e
-            )
+            data = r.json()
+            rate = float(data["Realtime Currency Exchange Rate"]["5. Exchange Rate"])
+            return rate
+        except Exception as e:
+            logging.warning("⚠️ Alpha Vantage intento %d/%d: %s", attempt, attempts, e)
             time.sleep(2)
     logging.error("❌ Fallo tras %d intentos para %s/%s", attempts, from_curr, to_curr)
     return None
@@ -91,14 +90,12 @@ def micro_trend(prices, pair):
         return "NEUTRO"
     diff = abs(prices[-1] - prices[-2])
     min_move = MIN_MOVES.get(pair, 0.00002)
-    if diff < min_move:
-        return "NEUTRO"
-    return "CALL" if prices[-1] > prices[-2] else "PUT"
+    return "NEUTRO" if diff < min_move else ("CALL" if prices[-1] > prices[-2] else "PUT")
 
 def build_message(base, quote, direction, entry, tp, sl, prob):
-    icon = "🟢" if direction == "CALL" else "🔴"
+    icon  = "🟢" if direction == "CALL" else "🔴"
     color = "📈" if direction == "CALL" else "📉"
-    now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    now   = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
     return (
         f"{icon} **SEÑAL {base}/{quote}**\n"
         f"⏰ Hora: {now}\n"
@@ -121,18 +118,18 @@ def send_signals():
                 break
             prices.append(p)
             if i == 0:
-                time.sleep(30)  # <-- clave: 30 s entre muestras
+                time.sleep(1)  # Alpha Vantage admite 1 llamada/s
         else:
             diff = abs(prices[-1] - prices[-2])
             pips = diff * 10_000 if "JPY" not in quote else diff * 100
-            logging.info("Δ %s/%s: %.6f  (%.2f pips)", base, quote, diff, pips)
+            logging.info("Δ %s/%s: %.6f  (%.4f pips)", base, quote, diff, pips)
 
             direction = micro_trend(prices, pair)
             if direction == "NEUTRO":
                 logging.info("➖ Sin señal para %s/%s (NEUTRO)", base, quote)
                 continue
 
-            entry = prices[-1]
+            entry     = prices[-1]
             tick_size = TICK_SIZE.get(pair, 0.00025)
             tp = entry - tick_size if direction == "PUT" else entry + tick_size
             sl = entry + tick_size if direction == "PUT" else entry - tick_size
@@ -146,6 +143,7 @@ def send_signals():
             except Exception:
                 logging.exception("❌ Error enviando mensaje")
 
+# ------------------- Flask --------------------
 app = Flask(__name__)
 
 @app.route("/")
@@ -168,8 +166,9 @@ def run_web():
     logging.info("🌐 Escuchando en el puerto %s", port)
     app.run(host="0.0.0.0", port=port)
 
+# ------------------- Main --------------------
 if __name__ == "__main__":
-    logging.info("🚀 Bot arrancado (versión mejorada)")
+    logging.info("🚀 Bot arrancado con Alpha Vantage")
     threading.Thread(target=run_web, daemon=True).start()
     schedule.every(5).minutes.do(send_signals)
     while True:
