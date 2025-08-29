@@ -1,14 +1,14 @@
 """
-Bot de señales FX 5 min
-- Alpha Vantage para precios en tiempo real
-- Log de pips con 4 decimales
-- min_move y tick_size configurables
-- Hora local de Perú (America/Lima)
-- Seguimiento de resultados a los 5 minutos
+Bot de señales FX 5 min – Perú
+- Alpha Vantage en tiempo real
+- Rangos amplios para reducir empates
+- Hora local (Lima)
+- Persistencia en disco
 - Resultados como respuesta al mensaje original
 """
 
 import os
+import json
 import time
 import logging
 import sys
@@ -20,7 +20,7 @@ from datetime import datetime
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
-    from backports.zoneinfo import ZoneInfo  # Para Python < 3.9
+    from backports.zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from telegram import Bot
@@ -52,7 +52,7 @@ PAIRS = [
     ("AUD", "USD"),
 ]
 
-# Valores mejorados para reducir empates
+# Rangos amplios para reducir empates
 MIN_MOVES = {
     ("EUR", "USD"): float(os.getenv("MIN_MOVE_EURUSD", 0.00006)),
     ("GBP", "USD"): float(os.getenv("MIN_MOVE_GBPUSD", 0.00006)),
@@ -67,9 +67,20 @@ TICK_SIZE = {
     ("AUD", "USD"): float(os.getenv("TICK_AUDUSD", 0.00080)),
 }
 
-ACTIVE_SIGNALS = []
-
 TZ_PERU = ZoneInfo("America/Lima")
+SIGNAL_FILE = "signals.json"
+
+def load_signals():
+    if os.path.exists(SIGNAL_FILE):
+        with open(SIGNAL_FILE) as f:
+            return json.load(f)
+    return []
+
+def save_signals():
+    with open(SIGNAL_FILE, "w") as f:
+        json.dump(ACTIVE_SIGNALS, f, default=str)
+
+ACTIVE_SIGNALS = load_signals()
 
 def get_price(from_curr="EUR", to_curr="USD", attempts=3):
     params = {
@@ -85,7 +96,7 @@ def get_price(from_curr="EUR", to_curr="USD", attempts=3):
             data = r.json()
             if "Realtime Currency Exchange Rate" not in data:
                 raise ValueError("Campo no encontrado")
-            rate_str = data["Realtime Currency Exchange Rate"].get("5. Exchange Rate")
+            rate_str = data["Realtime Currency Exchange Rate"]["5. Exchange Rate"]
             if not rate_str:
                 raise ValueError("Tipo de cambio vacío")
             return float(rate_str)
@@ -169,18 +180,18 @@ def send_signals():
                 "entry": entry,
                 "tp": tp,
                 "sl": sl,
-                "created_at": datetime.now(TZ_PERU),
+                "created_at": datetime.now(TZ_PERU).isoformat(),
                 "message_id": sent.message_id
             })
+            save_signals()
         except Exception:
             logging.exception("❌ Error enviando señal")
-
         time.sleep(12)
 
 def check_results():
     still_active = []
     for sig in ACTIVE_SIGNALS:
-        elapsed = (datetime.now(TZ_PERU) - sig["created_at"]).total_seconds()
+        elapsed = (datetime.now(TZ_PERU) - datetime.fromisoformat(sig["created_at"])).total_seconds()
         if elapsed < 300:
             still_active.append(sig)
             continue
@@ -202,6 +213,7 @@ def check_results():
             logging.exception("❌ Error respondiendo al mensaje")
 
     ACTIVE_SIGNALS[:] = still_active
+    save_signals()
 
 app = Flask(__name__)
 
