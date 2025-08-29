@@ -1,106 +1,73 @@
 """
-Bot FX 5 min – Perú v2
-- ATR dinámico para TP/SL
-- RSI como filtro de momentum
-- Evita horas de noticias (hard-coded para simplificar)
-- Persistencia robusta
+Bot FX 5 min – Perú (v2 light)
+Sin pandas, sin ta.
+Compatible con python-telegram-bot 13.x
 """
 import os
 import json
 import time
 import logging
-import sys
 import threading
+import sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
-import pandas as pd
 import schedule
-from ta.volatility import AverageTrueRange
-from ta.momentum import RSIIndicator
 from flask import Flask, request
 from telegram import Bot
 from dotenv import load_dotenv
 
+load_dotenv()
 logging.basicConfig(
     stream=sys.stdout,
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
-load_dotenv()
-
-# ---------------- CREDENCIALES ----------------
+# ---------------- CONFIG ----------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-CHAT_ID = int(os.getenv("CHAT_ID", "0"))
-ALPHA_KEY = os.getenv("ALPHA_KEY", "").strip()
-TEST_TOKEN = os.getenv("TEST_TOKEN", "test")
+CHAT_ID        = int(os.getenv("CHAT_ID", "0"))
+ALPHA_KEY      = os.getenv("ALPHA_KEY", "").strip()
+TEST_TOKEN     = os.getenv("TEST_TOKEN", "test")
 
 if not all([TELEGRAM_TOKEN, CHAT_ID, ALPHA_KEY]):
-    logging.error("❌ Falta configuración.")
+    logging.error("Faltan variables de entorno")
     sys.exit(1)
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# ---------------- CONFIG ----------------------
-TZ_PERU = ZoneInfo("America/Lima")
-SIGNAL_FILE = "signals_v2.json"
-CANDLES_FILE = "candles.json"  # cache de velas históricas
-MIN_RSI = 30
-MAX_RSI = 70
-ATR_MULTIPLIER_TP = 1.5
-ATR_MULTIPLIER_SL = 1.0
-LOOKBACK = 14  # períodos para ATR y RSI
-NEWS_TIMES = [
-    # Ejemplo: evitar entre 08:30-09:30 y 14:00-15:00 hora de Lima
-    (8, 30, 9, 30),
-    (14, 0, 15, 0)
-]
-
-PAIRS = [
-    ("EUR", "USD"),
-    ("GBP", "USD"),
-    ("AUD", "USD"),
-    ("USD", "JPY")
-]
-
-# ---------------- PERSISTENCIA ----------------
-def load_json(path, default):
-    return json.load(open(path)) if os.path.exists(path) else default
-
-def save_json(path, data):
-    with open(path, "w") as f:
-        json.dump(data, f, default=str, indent=2)
-
-ACTIVE_SIGNALS = load_json(SIGNAL_FILE, [])
-CANDLES_CACHE = load_json(CANDLES_FILE, {})
+TZ_PERU   = ZoneInfo("America/Lima")
+SIGNAL_F  = "signals.json"
+ACTIVE_S  = json.load(open(SIGNAL_F)) if os.path.exists(SIGNAL_F) else []
 
 # ---------------- UTILS -----------------------
 def now_peru():
     return datetime.now(TZ_PERU)
 
+def save():
+    with open(SIGNAL_F, "w") as f:
+        json.dump(ACTIVE_S, f, default=str, indent=2)
+
 def is_news_time(dt):
     t = dt.time()
-    for h1, m1, h2, m2 in NEWS_TIMES:
+    # Ej: evitar 08:30–09:30 y 14:00–15:00 Lima
+    ranges = [(8,30,9,30), (14,0,15,0)]
+    for h1,m1,h2,m2 in ranges:
         start = t.replace(hour=h1, minute=m1, second=0, microsecond=0)
-        end = t.replace(hour=h2, minute=m2, second=0, microsecond=0)
+        end   = t.replace(hour=h2, minute=m2, second=0, microsecond=0)
         if start <= t <= end:
             return True
     return False
 
-def get_alpha_series(from_curr, to_curr, interval="5min", outputsize=LOOKBACK + 1):
-    """
-    Descarga las últimas velas de 5 min vía Alpha Vantage FX_INTRADAY
-    Devuelve pd.Series de precios de cierre.
-    """
+def get_price_series(from_curr, to_curr, interval="5min", n=21):
     url = "https://www.alphavantage.co/query"
     params = {
         "function": "FX_INTRADAY",
         "from_symbol": from_curr,
         "to_symbol": to_curr,
         "interval": interval,
-        "outputsize": str(outputsize),
+        "outputsize": str(n),
         "apikey": ALPHA_KEY
     }
     r = requests.get(url, params=params, timeout=20)
@@ -108,149 +75,124 @@ def get_alpha_series(from_curr, to_curr, interval="5min", outputsize=LOOKBACK + 
     data = r.json()
     key = f"Time Series FX ({interval})"
     if key not in data:
-        logging.warning("No se encontró serie %s/%s", from_curr, to_curr)
         return None
     raw = data[key]
-    df = pd.DataFrame(raw).T.astype(float)
-    closes = df.loc[:, "4. close"].sort_index()
-    return closes.iloc[-outputsize:]
+    closes = [float(v["4. close"]) for _, v in sorted(raw.items())]
+    return closes[-n:]
 
-def calc_indicators(series):
-    """
-    Calcula ATR y RSI sobre la serie de precios.
-    Devuelve (atr, rsi) del último punto.
-    """
-    if len(series) < LOOKBACK + 1:
-        return None, None
-    atr = AverageTrueRange(
-        high=series, low=series, close=series, window=LOOKBACK
-    ).average_true_range().iloc[-1]
-    rsi = RSIIndicator(series, window=LOOKBACK).rsi().iloc[-1]
-    return atr, rsi
+def sma(lst, n):
+    return sum(lst[-n:]) / n
 
-def build_signal_msg(base, quote, direction, entry, tp, sl, rsi, atr):
-    icon = "🟢" if direction == "BUY" else "🔴"
-    now = now_peru().strftime("%H:%M:%S")
-    return (
-        f"{icon} **SEÑAL {base}/{quote}**\n"
-        f"⏰ Hora: {now}\n"
-        f"📊 Acción: {direction}\n"
-        f"💰 Entrada: ≤ {entry:.5f}\n"
-        f"🎯 TP: {tp:.5f}  (ATR*{ATR_MULTIPLIER_TP:.1f})\n"
-        f"❌ SL: {sl:.5f}  (ATR*{ATR_MULTIPLIER_SL:.1f})\n"
-        f"📈 RSI: {rsi:.1f}"
-    )
+def rsi(closes, n=14):
+    deltas = [c - p for p, c in zip(closes, closes[1:])]
+    gains  = [d if d > 0 else 0 for d in deltas]
+    losses = [-d if d < 0 else 0 for d in deltas]
+    avg_gain = sma(gains, n)
+    avg_loss = sma(losses, n)
+    if avg_loss == 0:
+        return 100
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
-def build_result_msg(sig, current):
-    direction = sig["direction"]
-    entry, tp, sl = sig["entry"], sig["tp"], sig["sl"]
-    result = (
-        "✅ GANADA" if (direction == "BUY" and current >= tp) or
-                      (direction == "SELL" and current <= tp) else
-        "❌ PERDIDA" if (direction == "BUY" and current <= sl) or
-                       (direction == "SELL" and current >= sl) else
-        "⚖️ EMPATE"
-    )
-    now = now_peru().strftime("%H:%M:%S")
-    return (
-        f"📊 **RESULTADO {sig['pair']}**\n"
-        f"⏰ Hora: {now}\n"
-        f"📍 Precio: {current:.5f}\n"
-        f"{result}"
-    )
+def atr(closes, n=14):
+    # simplificado con True Range = |Close_t - Close_{t-1}|
+    trs = [abs(c - p) for p, c in zip(closes, closes[1:])]
+    return sma(trs, n)
 
-# ---------------- LÓGICA ----------------------
+# ---------------- LOGIC -----------------------
 def send_signals():
     dt = now_peru()
     if is_news_time(dt):
-        logging.info("Saltando señales – hora de noticias")
+        logging.info("Saltando – horario de noticias")
         return
 
-    for base, quote in PAIRS:
+    for base, quote in [("EUR","USD"), ("GBP","USD"), ("AUD","USD"), ("USD","JPY")]:
         pair = f"{base}/{quote}"
-        if any(s["pair"] == pair for s in ACTIVE_SIGNALS):
+        if any(s["pair"] == pair for s in ACTIVE_S):
             continue
 
-        closes = get_alpha_series(base, quote)
-        if closes is None:
-            continue
-        atr, rsi = calc_indicators(closes)
-        if atr is None or rsi is None:
+        closes = get_price_series(base, quote, n=21)
+        if not closes or len(closes) < 15:
             continue
 
-        last_close = closes.iloc[-1]
+        current = closes[-1]
+        rsi_val = rsi(closes)
+        atr_val = atr(closes)
+
         direction = None
-        if rsi < MIN_RSI:
+        if rsi_val < 30:
             direction = "BUY"
-        elif rsi > MAX_RSI:
+        elif rsi_val > 70:
             direction = "SELL"
         else:
-            continue  # RSI neutro
+            continue
 
-        tick_size = 0.01 if quote == "JPY" else 0.0001
-        tp = last_close + atr * ATR_MULTIPLIER_TP * (-1 if direction == "SELL" else 1)
-        sl = last_close - atr * ATR_MULTIPLIER_SL * (-1 if direction == "SELL" else 1)
+        tick = 0.01 if quote == "JPY" else 0.0001
+        tp = round((current + atr_val * 1.5) * (1 if direction == "BUY" else -1) / tick) * tick
+        sl = round((current - atr_val * 1.0) * (1 if direction == "BUY" else -1) / tick) * tick
 
-        # Normalizar TP/SL a múltiplos de tick
-        tp = round(tp / tick_size) * tick_size
-        sl = round(sl / tick_size) * tick_size
-
-        msg = build_signal_msg(base, quote, direction, last_close, tp, sl, rsi, atr)
+        icon = "🟢" if direction == "BUY" else "🔴"
+        msg = (
+            f"{icon} **SEÑAL {base}/{quote}**\n"
+            f"⏰ Hora: {dt.strftime('%H:%M:%S')}\n"
+            f"📊 Acción: {direction}\n"
+            f"💰 Entrada: ≤ {current:.5f}\n"
+            f"🎯 TP: {tp:.5f}\n"
+            f"❌ SL: {sl:.5f}\n"
+            f"📈 RSI: {rsi_val:.1f}"
+        )
         try:
-            sent = bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
-            ACTIVE_SIGNALS.append({
+            m = bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+            ACTIVE_S.append({
                 "pair": pair,
                 "direction": direction,
-                "entry": last_close,
+                "entry": current,
                 "tp": tp,
                 "sl": sl,
                 "created_at": dt.isoformat(),
-                "message_id": sent.message_id
+                "message_id": m.message_id
             })
-            save_json(SIGNAL_FILE, ACTIVE_SIGNALS)
-            logging.info("Señal enviada %s %s", pair, direction)
-        except Exception:
-            logging.exception("Error enviando señal %s", pair)
+            save()
+        except Exception as e:
+            logging.exception("Error enviando señal")
 
 def check_results():
-    still_active = []
-    for sig in ACTIVE_SIGNALS:
-        elapsed = (now_peru() - datetime.fromisoformat(sig["created_at"])).total_seconds()
-        if elapsed < 300:
-            still_active.append(sig)
+    still = []
+    for sig in ACTIVE_S:
+        if (now_peru() - datetime.fromisoformat(sig["created_at"])).total_seconds() < 300:
+            still.append(sig)
             continue
-
         base, quote = sig["pair"].split("/")
-        current = get_price_latest(base, quote)
-        if current is None:
-            still_active.append(sig)
-            continue
-
-        msg = build_result_msg(sig, current)
+        url = "https://www.alphavantage.co/query"
+        params = {
+            "function": "CURRENCY_EXCHANGE_RATE",
+            "from_currency": base,
+            "to_currency": quote,
+            "apikey": ALPHA_KEY
+        }
         try:
+            r = requests.get(url, params=params, timeout=10)
+            r.raise_for_status()
+            current = float(r.json()["Realtime Currency Exchange Rate"]["5. Exchange Rate"])
+            result = "✅ GANADA" if (
+                (sig["direction"] == "BUY" and current >= sig["tp"]) or
+                (sig["direction"] == "SELL" and current <= sig["tp"])
+            ) else "❌ PERDIDA" if (
+                (sig["direction"] == "BUY" and current <= sig["sl"]) or
+                (sig["direction"] == "SELL" and current >= sig["sl"])
+            ) else "⚖️ EMPATE"
+            msg = (
+                f"📊 **RESULTADO {sig['pair']}**\n"
+                f"⏰ Hora: {now_peru().strftime('%H:%M:%S')}\n"
+                f"📍 Precio: {current:.5f}\n"
+                f"{result}"
+            )
             bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown",
                              reply_to_message_id=sig["message_id"])
         except Exception:
-            logging.exception("Error enviando resultado %s", sig["pair"])
-
-    ACTIVE_SIGNALS[:] = still_active
-    save_json(SIGNAL_FILE, ACTIVE_SIGNALS)
-
-def get_price_latest(from_curr, to_curr):
-    """Último precio usando mismo endpoint de Alpha Vantage (rápido)"""
-    params = {
-        "function": "CURRENCY_EXCHANGE_RATE",
-        "from_currency": from_curr,
-        "to_currency": to_curr,
-        "apikey": ALPHA_KEY
-    }
-    try:
-        r = requests.get("https://www.alphavantage.co/query", params=params, timeout=10)
-        r.raise_for_status()
-        return float(r.json()["Realtime Currency Exchange Rate"]["5. Exchange Rate"])
-    except Exception as e:
-        logging.warning("Error obteniendo precio: %s", e)
-        return None
+            still.append(sig)
+    ACTIVE_S[:] = still
+    save()
 
 # ---------------- FLASK -----------------------
 app = Flask(__name__)
@@ -275,7 +217,7 @@ def run_web():
 
 # ---------------- MAIN ------------------------
 if __name__ == "__main__":
-    logging.info("🚀 Bot FX v2 arrancado – ATR + RSI")
+    logging.info("🚀 Bot FX v2-light arrancado")
     threading.Thread(target=run_web, daemon=True).start()
     schedule.every(5).minutes.do(send_signals)
     schedule.every(30).seconds.do(check_results)
