@@ -1,6 +1,5 @@
 """
-Bot FX 5 min – Perú (v2 light)
-Sin pandas, sin ta.
+Bot FX 5 min – Perú (v2-light sin filtro de noticias)
 Compatible con python-telegram-bot 13.x
 """
 import os
@@ -49,16 +48,27 @@ def save():
     with open(SIGNAL_F, "w") as f:
         json.dump(ACTIVE_S, f, default=str, indent=2)
 
-def is_news_time(dt):
-    t = dt.time()
-    # Ej: evitar 08:30–09:30 y 14:00–15:00 Lima
-    ranges = [(8,30,9,30), (14,0,15,0)]
-    for h1,m1,h2,m2 in ranges:
-        start = t.replace(hour=h1, minute=m1, second=0, microsecond=0)
-        end   = t.replace(hour=h2, minute=m2, second=0, microsecond=0)
-        if start <= t <= end:
-            return True
-    return False
+def sma(lst, n):
+    return sum(lst[-n:]) / n if len(lst) >= n else None
+
+def rsi(closes, n=14):
+    if len(closes) < n + 1:
+        return None
+    deltas = [c - p for p, c in zip(closes, closes[1:])]
+    gains  = [d if d > 0 else 0 for d in deltas[-n:]]
+    losses = [-d if d < 0 else 0 for d in deltas[-n:]]
+    avg_gain = sma(gains, n)
+    avg_loss = sma(losses, n)
+    if not avg_gain or not avg_loss or avg_loss == 0:
+        return None
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+def atr(closes, n=14):
+    if len(closes) < n + 1:
+        return None
+    trs = [abs(c - p) for p, c in zip(closes, closes[1:])]
+    return sma(trs, n)
 
 def get_price_series(from_curr, to_curr, interval="5min", n=21):
     url = "https://www.alphavantage.co/query"
@@ -70,54 +80,44 @@ def get_price_series(from_curr, to_curr, interval="5min", n=21):
         "outputsize": str(n),
         "apikey": ALPHA_KEY
     }
-    r = requests.get(url, params=params, timeout=20)
-    r.raise_for_status()
-    data = r.json()
-    key = f"Time Series FX ({interval})"
-    if key not in data:
+    try:
+        r = requests.get(url, params=params, timeout=20)
+        r.raise_for_status()
+        data = r.json()
+        key = f"Time Series FX ({interval})"
+        if key not in data:
+            logging.warning("No hay datos para %s/%s", from_curr, to_curr)
+            return None
+        raw = data[key]
+        closes = [float(v["4. close"]) for _, v in sorted(raw.items())]
+        return closes[-n:]
+    except Exception as e:
+        logging.exception("Error descargando serie %s/%s", from_curr, to_curr)
         return None
-    raw = data[key]
-    closes = [float(v["4. close"]) for _, v in sorted(raw.items())]
-    return closes[-n:]
-
-def sma(lst, n):
-    return sum(lst[-n:]) / n
-
-def rsi(closes, n=14):
-    deltas = [c - p for p, c in zip(closes, closes[1:])]
-    gains  = [d if d > 0 else 0 for d in deltas]
-    losses = [-d if d < 0 else 0 for d in deltas]
-    avg_gain = sma(gains, n)
-    avg_loss = sma(losses, n)
-    if avg_loss == 0:
-        return 100
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-def atr(closes, n=14):
-    # simplificado con True Range = |Close_t - Close_{t-1}|
-    trs = [abs(c - p) for p, c in zip(closes, closes[1:])]
-    return sma(trs, n)
 
 # ---------------- LOGIC -----------------------
 def send_signals():
     dt = now_peru()
-    if is_news_time(dt):
-        logging.info("Saltando – horario de noticias")
-        return
+    logging.info("Procesando señales – hora %s", dt.strftime("%H:%M:%S"))
 
-    for base, quote in [("EUR","USD"), ("GBP","USD"), ("AUD","USD"), ("USD","JPY")]:
+    for base, quote in [("EUR", "USD"), ("GBP", "USD"), ("AUD", "USD"), ("USD", "JPY")]:
         pair = f"{base}/{quote}"
         if any(s["pair"] == pair for s in ACTIVE_S):
+            logging.debug("%s ya tiene señal activa", pair)
             continue
 
         closes = get_price_series(base, quote, n=21)
         if not closes or len(closes) < 15:
+            logging.debug("Datos insuficientes para %s", pair)
             continue
 
         current = closes[-1]
         rsi_val = rsi(closes)
         atr_val = atr(closes)
+
+        if rsi_val is None or atr_val is None:
+            logging.debug("Indicadores nulos para %s", pair)
+            continue
 
         direction = None
         if rsi_val < 30:
@@ -125,11 +125,12 @@ def send_signals():
         elif rsi_val > 70:
             direction = "SELL"
         else:
+            logging.debug("RSI neutro (%s) para %s", rsi_val, pair)
             continue
 
         tick = 0.01 if quote == "JPY" else 0.0001
-        tp = round((current + atr_val * 1.5) * (1 if direction == "BUY" else -1) / tick) * tick
-        sl = round((current - atr_val * 1.0) * (1 if direction == "BUY" else -1) / tick) * tick
+        tp = round((current + atr_val * 1.5 * (1 if direction == "BUY" else -1)) / tick) * tick
+        sl = round((current - atr_val * 1.0 * (1 if direction == "BUY" else -1)) / tick) * tick
 
         icon = "🟢" if direction == "BUY" else "🔴"
         msg = (
@@ -153,7 +154,8 @@ def send_signals():
                 "message_id": m.message_id
             })
             save()
-        except Exception as e:
+            logging.info("Señal enviada %s %s", pair, direction)
+        except Exception:
             logging.exception("Error enviando señal")
 
 def check_results():
@@ -217,7 +219,7 @@ def run_web():
 
 # ---------------- MAIN ------------------------
 if __name__ == "__main__":
-    logging.info("🚀 Bot FX v2-light arrancado")
+    logging.info("🚀 Bot FX v2-light arrancado – sin filtro de noticias")
     threading.Thread(target=run_web, daemon=True).start()
     schedule.every(5).minutes.do(send_signals)
     schedule.every(30).seconds.do(check_results)
