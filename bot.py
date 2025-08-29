@@ -6,6 +6,7 @@ Incluye:
   - min_move configurable
   - Zona horaria UTC
   - Refactor de mensaje
+  - 30 s entre muestras para evitar precios iguales
 """
 
 import os
@@ -28,7 +29,7 @@ logging.basicConfig(
 
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-CHAT_ID        = os.getenv("CHAT_ID", "").strip()
+CHAT_ID = os.getenv("CHAT_ID", "").strip()
 
 if not all([TELEGRAM_TOKEN, CHAT_ID]):
     logging.error("❌ Faltan variables de entorno.")
@@ -77,8 +78,10 @@ def get_price(from_curr="EUR", to_curr="USD", attempts=3):
                 return None
             return float(rate)
         except requests.exceptions.RequestException as e:
-            logging.warning("⚠️ Intentando %s/%s – intento %d/%d: %s",
-                            from_curr, to_curr, attempt, attempts, e)
+            logging.warning(
+                "⚠️ Intentando %s/%s – intento %d/%d: %s",
+                from_curr, to_curr, attempt, attempts, e
+            )
             time.sleep(2)
     logging.error("❌ Fallo tras %d intentos para %s/%s", attempts, from_curr, to_curr)
     return None
@@ -93,9 +96,9 @@ def micro_trend(prices, pair):
     return "CALL" if prices[-1] > prices[-2] else "PUT"
 
 def build_message(base, quote, direction, entry, tp, sl, prob):
-    icon  = "🟢" if direction == "CALL" else "🔴"
+    icon = "🟢" if direction == "CALL" else "🔴"
     color = "📈" if direction == "CALL" else "📉"
-    now   = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
     return (
         f"{icon} **SEÑAL {base}/{quote}**\n"
         f"⏰ Hora: {now}\n"
@@ -118,7 +121,7 @@ def send_signals():
                 break
             prices.append(p)
             if i == 0:
-                time.sleep(1)
+                time.sleep(30)  # <-- clave: 30 s entre muestras
         else:
             diff = abs(prices[-1] - prices[-2])
             pips = diff * 10_000 if "JPY" not in quote else diff * 100
@@ -129,7 +132,7 @@ def send_signals():
                 logging.info("➖ Sin señal para %s/%s (NEUTRO)", base, quote)
                 continue
 
-            entry     = prices[-1]
+            entry = prices[-1]
             tick_size = TICK_SIZE.get(pair, 0.00025)
             tp = entry - tick_size if direction == "PUT" else entry + tick_size
             sl = entry + tick_size if direction == "PUT" else entry - tick_size
