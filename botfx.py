@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-Bot OTC 5 min – Perú (Finnhub + velas 1-min)
+Bot OTC 5 min – Perú (Finnhub + activos volátiles)
 - Apuesta simple: arriba / abajo
 - Cierre automático a los 5 min
-- Mensaje final ganaste / perdiste
 - Dirección según última vela 1-min
 """
 
@@ -45,8 +44,8 @@ if not all([TELEGRAM_TOKEN, CHAT_ID, FINNHUB_API_KEY]):
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# ✅ Símbolos válidos Finnhub (acciones + criptos) – plan free
-OTC_PAIRS = ["AAPL", "MSFT", "TSLA", "BTC", "ETH"]
+# ✅ Activos volátiles (Finnhub free): acciones y criptos
+OTC_PAIRS = ["NVDA", "PLTR", "GME", "ETH", "BTC"]
 
 TZ_PERU   = ZoneInfo("America/Lima")
 SIGNAL_FILE = "otc_signals.json"
@@ -64,14 +63,19 @@ def save_signals():
 
 ACTIVE_SIGNALS = load_signals()
 
-# ----------------- CANDLE 1-MIN -----------------
+# ----------------- VELAS 1-MIN -----------------
 def fetch_last_two_closes(symbol, resolution=1):
     """
     Devuelve (actual, anterior) de la vela más reciente vs. la anterior.
     resolution=1 → 1 minuto.
     """
     to   = int(time.time())
-    url  = "https://finnhub.io/api/v1/stock/candle" if symbol not in ["BTC", "ETH"] else "https://finnhub.io/api/v1/crypto/symbol"
+    # Endpoint según tipo
+    if symbol in ["BTC", "ETH"]:
+        url = "https://finnhub.io/api/v1/crypto/candle"
+    else:
+        url = "https://finnhub.io/api/v1/stock/candle"
+
     params = {
         "symbol": symbol,
         "resolution": resolution,
@@ -175,7 +179,7 @@ def run_web():
 
 # ----------------- INICIO -----------------
 if __name__ == "__main__":
-    logging.info("🚀 Bot OTC 5 min – Perú (Finnhub + velas)")
+    logging.info("🚀 Bot OTC 5 min – Perú (Finnhub + volátiles)")
     threading.Thread(target=run_web, daemon=True).start()
     schedule.every(5).minutes.do(open_bets)
     schedule.every(30).seconds.do(close_bets)
