@@ -1,5 +1,5 @@
 """
-Bot FX 5 min – Perú (v2-light sin filtro de noticias)
+Bot FX 5 min – Perú (v4-light + Finnhub)
 Compatible con python-telegram-bot 13.x
 """
 import os
@@ -8,7 +8,7 @@ import time
 import logging
 import threading
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import requests
@@ -25,32 +25,37 @@ logging.basicConfig(
 )
 
 # ---------------- CONFIG ----------------------
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-CHAT_ID        = int(os.getenv("CHAT_ID", "0"))
-ALPHA_KEY      = os.getenv("ALPHA_KEY", "").strip()
-TEST_TOKEN     = os.getenv("TEST_TOKEN", "test")
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN", "").strip()
+CHAT_ID          = int(os.getenv("CHAT_ID", "0"))
+FINNHUB_API_KEY  = os.getenv("FINNHUB_API_KEY", "").strip()
+TEST_TOKEN       = os.getenv("TEST_TOKEN", "test")
 
-# Log inicial
-logging.info("TOKEN: %s  CHAT_ID: %s  ALPHA_KEY: %s",
-             bool(TELEGRAM_TOKEN), bool(CHAT_ID), bool(ALPHA_KEY))
+logging.info("TOKEN: %s  CHAT_ID: %s  FINNHUB_KEY: %s",
+             bool(TELEGRAM_TOKEN), bool(CHAT_ID), bool(FINNHUB_API_KEY))
 
-if not all([TELEGRAM_TOKEN, CHAT_ID, ALPHA_KEY]):
+if not all([TELEGRAM_TOKEN, CHAT_ID, FINNHUB_API_KEY]):
     logging.error("Faltan variables de entorno")
     sys.exit(1)
 
 bot = Bot(token=TELEGRAM_TOKEN)
-
 TZ_PERU   = ZoneInfo("America/Lima")
 SIGNAL_F  = "signals.json"
-ACTIVE_S  = json.load(open(SIGNAL_F)) if os.path.exists(SIGNAL_F) else []
+lock      = threading.Lock()
+
+try:
+    with open(SIGNAL_F) as f:
+        ACTIVE_S = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    ACTIVE_S = []
 
 # ---------------- UTILS -----------------------
 def now_peru():
     return datetime.now(TZ_PERU)
 
 def save():
-    with open(SIGNAL_F, "w") as f:
-        json.dump(ACTIVE_S, f, default=str, indent=2)
+    with lock:
+        with open(SIGNAL_F, "w") as f:
+            json.dump(ACTIVE_S, f, default=str, indent=2)
 
 def sma(lst, n):
     return sum(lst[-n:]) / n if len(lst) >= n else None
@@ -74,45 +79,26 @@ def atr(closes, n=14):
     trs = [abs(c - p) for p, c in zip(closes, closes[1:])]
     return sma(trs, n)
 
-def get_price_series(from_curr, to_curr, interval="5min", n=21):
-    url = "https://www.alphavantage.co/query"
+def get_price_series(symbol, resolution=5, count=21):
+    """
+    Finnhub solo entrega 1-min, 5-min, 15-min, 30-min, 60-min, D, W, M
+    Para 5-min usamos resolution=5
+    """
+    url = "https://finnhub.io/api/v1/forex/candle"
     params = {
-        "function": "FX_INTRADAY",
-        "from_symbol": from_curr,
-        "to_symbol": to_curr,
-        "interval": interval,
-        "outputsize": str(n),
-        "apikey": ALPHA_KEY
+        "symbol": symbol,          # Ej: "OANDA:EUR_USD"
+        "resolution": resolution,
+        "count": count,
+        "token": FINNHUB_API_KEY
     }
     try:
         r = requests.get(url, params=params, timeout=20)
         r.raise_for_status()
         data = r.json()
-        key = f"Time Series FX ({interval})"
-        if key in data and data[key]:
-            raw = data[key]
-            closes = [float(v["4. close"]) for _, v in sorted(raw.items())]
-            if len(closes) >= n:
-                return closes[-n:]
+        if "c" in data and data["c"]:
+            return data["c"][-count:]
     except Exception as e:
-        logging.warning("FX_INTRADAY falló para %s/%s: %s", from_curr, to_curr, e)
-
-    fallback_url = "https://www.alphavantage.co/query"
-    fallback_params = {
-        "function": "CURRENCY_EXCHANGE_RATE",
-        "from_currency": from_curr,
-        "to_currency": to_currency,
-        "apikey": ALPHA_KEY
-    }
-    try:
-        r = requests.get(fallback_url, params=fallback_params, timeout=10)
-        r.raise_for_status()
-        payload = r.json()
-        current = float(payload["Realtime Currency Exchange Rate"]["5. Exchange Rate"])
-        logging.info("Fallback OK: %s/%s -> %.5f", from_curr, to_curr, current)
-        return [current] * n
-    except Exception as e:
-        logging.error("Fallback falló: %s", e)
+        logging.warning("Finnhub falló para %s: %s", symbol, e)
     return None
 
 # ---------------- LOGIC -----------------------
@@ -120,43 +106,38 @@ def send_signals():
     dt = now_peru()
     logging.info("Procesando señales – hora %s", dt.strftime("%H:%M:%S"))
 
-    for base, quote in [("EUR", "USD"), ("GBP", "USD"), ("AUD", "USD"), ("USD", "JPY")]:
-        pair = f"{base}/{quote}"
-        if any(s["pair"] == pair for s in ACTIVE_S):
-            logging.debug("%s ya tiene señal activa", pair)
-            continue
+    # Pares disponibles en Finnhub (prefijo OANDA:)
+    for pair in ["OANDA:EUR_USD", "OANDA:GBP_USD", "OANDA:AUD_USD", "OANDA:USD_JPY"]:
+        symbol = pair.replace("OANDA:", "").replace("_", "/")
+        with lock:
+            if any(s["pair"] == symbol for s in ACTIVE_S):
+                logging.debug("%s ya tiene señal activa", symbol)
+                continue
 
-        closes = get_price_series(base, quote, n=21)
+        closes = get_price_series(pair)
         if not closes or len(closes) < 15:
-            logging.debug("Datos insuficientes para %s", pair)
+            logging.debug("Datos insuficientes para %s", symbol)
             continue
 
         current = closes[-1]
         rsi_val = rsi(closes)
         atr_val = atr(closes)
 
-        logging.info("RSI %s = %.2f  ATR = %.5f", pair, rsi_val or 0.0, atr_val or 0.0)
-
         if rsi_val is None or atr_val is None:
-            logging.debug("Indicadores nulos para %s", pair)
+            logging.debug("Indicadores nulos para %s", symbol)
             continue
 
-        direction = None
-        if rsi_val < 30:
-            direction = "BUY"
-        elif rsi_val > 70:
-            direction = "SELL"
-        else:
-            logging.info("RSI neutro (%.2f) para %s — no se genera señal", rsi_val, pair)
+        direction = "BUY" if rsi_val < 30 else "SELL" if rsi_val > 70 else None
+        if not direction:
             continue
 
-        tick = 0.01 if quote == "JPY" else 0.0001
+        tick = 0.01 if "JPY" in pair else 0.0001
         tp = round((current + atr_val * 1.5 * (1 if direction == "BUY" else -1)) / tick) * tick
         sl = round((current - atr_val * 1.0 * (1 if direction == "BUY" else -1)) / tick) * tick
 
         icon = "🟢" if direction == "BUY" else "🔴"
         msg = (
-            f"{icon} **SEÑAL {base}/{quote}**\n"
+            f"{icon} **SEÑAL {symbol}**\n"
             f"⏰ Hora: {dt.strftime('%H:%M:%S')}\n"
             f"📊 Acción: {direction}\n"
             f"💰 Entrada: ≤ {current:.5f}\n"
@@ -166,57 +147,57 @@ def send_signals():
         )
         try:
             m = bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
-            ACTIVE_S.append({
-                "pair": pair,
-                "direction": direction,
-                "entry": current,
-                "tp": tp,
-                "sl": sl,
-                "created_at": dt.isoformat(),
-                "message_id": m.message_id
-            })
-            save()
-            logging.info("Señal enviada %s %s", pair, direction)
+            with lock:
+                ACTIVE_S.append({
+                    "pair": symbol,
+                    "direction": direction,
+                    "entry": current,
+                    "tp": tp,
+                    "sl": sl,
+                    "created_at": dt.isoformat(),
+                    "message_id": m.message_id
+                })
+                save()
+            logging.info("Señal enviada %s %s", symbol, direction)
         except Exception:
             logging.exception("Error enviando señal")
 
 def check_results():
     still = []
-    for sig in ACTIVE_S:
-        if (now_peru() - datetime.fromisoformat(sig["created_at"])).total_seconds() < 300:
-            still.append(sig)
-            continue
-        base, quote = sig["pair"].split("/")
-        url = "https://www.alphavantage.co/query"
-        params = {
-            "function": "CURRENCY_EXCHANGE_RATE",
-            "from_currency": base,
-            "to_currency": quote,
-            "apikey": ALPHA_KEY
-        }
-        try:
-            r = requests.get(url, params=params, timeout=10)
-            r.raise_for_status()
-            current = float(r.json()["Realtime Currency Exchange Rate"]["5. Exchange Rate"])
-            result = "✅ GANADA" if (
-                (sig["direction"] == "BUY" and current >= sig["tp"]) or
-                (sig["direction"] == "SELL" and current <= sig["tp"])
-            ) else "❌ PERDIDA" if (
-                (sig["direction"] == "BUY" and current <= sig["sl"]) or
-                (sig["direction"] == "SELL" and current >= sig["sl"])
-            ) else "⚖️ EMPATE"
-            msg = (
-                f"📊 **RESULTADO {sig['pair']}**\n"
-                f"⏰ Hora: {now_peru().strftime('%H:%M:%S')}\n"
-                f"📍 Precio: {current:.5f}\n"
-                f"{result}"
-            )
-            bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown",
-                             reply_to_message_id=sig["message_id"])
-        except Exception:
-            still.append(sig)
-    ACTIVE_S[:] = still
-    save()
+    with lock:
+        now = now_peru()
+        for sig in ACTIVE_S:
+            if (now - datetime.fromisoformat(sig["created_at"])).total_seconds() < 300:
+                still.append(sig)
+                continue
+
+            pair = "OANDA:" + sig["pair"].replace("/", "_")
+            url = "https://finnhub.io/api/v1/quote"
+            params = {"symbol": pair, "token": FINNHUB_API_KEY}
+            try:
+                r = requests.get(url, params=params, timeout=10)
+                r.raise_for_status()
+                data = r.json()
+                current = float(data["c"])
+                result = "✅ GANADA" if (
+                    (sig["direction"] == "BUY" and current >= sig["tp"]) or
+                    (sig["direction"] == "SELL" and current <= sig["tp"])
+                ) else "❌ PERDIDA" if (
+                    (sig["direction"] == "BUY" and current <= sig["sl"]) or
+                    (sig["direction"] == "SELL" and current >= sig["sl"])
+                ) else "⚖️ EMPATE"
+                msg = (
+                    f"📊 **RESULTADO {sig['pair']}**\n"
+                    f"⏰ Hora: {now_peru().strftime('%H:%M:%S')}\n"
+                    f"📍 Precio: {current:.5f}\n"
+                    f"{result}"
+                )
+                bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown",
+                                 reply_to_message_id=sig["message_id"])
+            except Exception:
+                still.append(sig)
+        ACTIVE_S[:] = still
+        save()
 
 # ---------------- FLASK -----------------------
 app = Flask(__name__)
@@ -237,11 +218,11 @@ def test():
 
 def run_web():
     port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, threaded=True)
+    app.run(host="0.0.0.0", port=port, threaded=True, debug=False)
 
 # ---------------- MAIN ------------------------
 if __name__ == "__main__":
-    logging.info("🚀 Bot FX v2-light arrancado – sin filtro de noticias")
+    logging.info("🚀 Bot FX v4-light + Finnhub arrancado")
     threading.Thread(target=run_web, daemon=True).start()
     schedule.every(5).minutes.do(send_signals)
     schedule.every(30).seconds.do(check_results)
