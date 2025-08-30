@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bot OTC 5 min – Perú (Twelve Data)
+Bot OTC 5 min – Perú (Finnhub)
 - Apuesta simple: arriba / abajo
 - Cierre automático a los 5 min
 - Mensaje final ganaste / perdiste
@@ -35,17 +35,17 @@ logging.basicConfig(
 # ----------------- CONFIG -----------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 CHAT_ID        = int(os.getenv("CHAT_ID", "0"))
-TWELVE_API_KEY = os.getenv("TWELVE_API_KEY", "").strip()
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
 TEST_TOKEN     = os.getenv("TEST_TOKEN", "test")
 
-if not all([TELEGRAM_TOKEN, CHAT_ID, TWELVE_API_KEY]):
+if not all([TELEGRAM_TOKEN, CHAT_ID, FINNHUB_API_KEY]):
     logging.error("❌ Faltan variables.")
     sys.exit(1)
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# ✅ SÍMBOLOS VÁLIDOS PARA PLAN GRATUITO
-OTC_PAIRS = ["AAPL", "MSFT", "TSLA", "EUR/USD", "USD/JPY"]
+# ✅ SÍMBOLOS VÁLIDOS EN FINNHUB (plan free) – sin forex
+OTC_PAIRS = ["AAPL", "MSFT", "TSLA", "BTC", "ETH"]
 
 TZ_PERU   = ZoneInfo("America/Lima")
 SIGNAL_FILE = "otc_signals.json"
@@ -69,29 +69,30 @@ CACHE_TTL = 30
 CACHE_LOCK = threading.Lock()
 
 def fetch_all_prices():
-    """Devuelve dict {symbol: price} para todos los OTC_PAIRS."""
+    """Devuelve dict {symbol: price} desde Finnhub."""
     with CACHE_LOCK:
         now_ts = int(time.time())
         if now_ts - CACHE["ts"] < CACHE_TTL:
             return CACHE["prices"]
 
-    symbols = ",".join(OTC_PAIRS)
-    url = "https://api.twelvedata.com/quote"
-    params = {"symbol": symbols, "apikey": TWELVE_API_KEY}
-    try:
-        r = requests.get(url, params=params, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        if isinstance(data, dict):
-            data = [data]
-        prices = {item["symbol"]: float(item["close"]) for item in data}
-        with CACHE_LOCK:
-            CACHE["ts"] = now_ts
-            CACHE["prices"] = prices
-        return prices
-    except Exception as e:
-        logging.warning("Twelve Data falló: %s", e)
-        return {}
+    prices = {}
+    for symbol in OTC_PAIRS:
+        url = f"https://finnhub.io/api/v1/quote"
+        params = {"symbol": symbol, "token": FINNHUB_API_KEY}
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            if "c" in data and data["c"] is not None:
+                prices[symbol] = float(data["c"])
+            else:
+                logging.warning("Finnhub: símbolo no disponible %s", symbol)
+        except Exception as e:
+            logging.warning("Finnhub falló %s: %s", symbol, e)
+    with CACHE_LOCK:
+        CACHE["ts"] = now_ts
+        CACHE["prices"] = prices
+    return prices
 
 def get_price(symbol):
     return fetch_all_prices().get(symbol)
@@ -185,7 +186,7 @@ def run_web():
 
 # ----------------- INICIO -----------------
 if __name__ == "__main__":
-    logging.info("🚀 Bot OTC 5 min – Perú (símbolos válidos)")
+    logging.info("🚀 Bot OTC 5 min – Perú (Finnhub)")
     threading.Thread(target=run_web, daemon=True).start()
     schedule.every(5).minutes.do(open_bets)
     schedule.every(30).seconds.do(close_bets)
