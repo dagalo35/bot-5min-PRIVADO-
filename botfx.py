@@ -40,7 +40,7 @@ if not all([TELEGRAM_TOKEN, CHAT_ID, TWELVE_API_KEY]):
     sys.exit(1)
 
 bot = Bot(token=TELEGRAM_TOKEN)
-OTC_PAIRS = ["US30USD", "US100USD", "DE30EUR", "BTCUSD", "ETHUSD"]
+OTC_PAIRS = ["US30", "US100", "DE30", "BTCUSD", "ETHUSD"]
 TZ_PERU = ZoneInfo("America/Lima")
 SIGNAL_FILE = "otc_signals.json"
 
