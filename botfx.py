@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
 """
-Bot OTC 5 min – Perú (Twelve Data + divisas)
+Bot OTC 5 min – Perú (Twelve Data FOREX)
 - Apuesta simple: arriba / abajo
 - Cierre automático a los 5 min
 - Dirección según última vela 5-min
+
+REQUISITOS
+----------
+1. Variables de entorno
+   TELEGRAM_TOKEN   = <token_del_bot>
+   CHAT_ID          = <id_del_chat/grupo>
+   TWELVE_API_KEY   = <clave_twelve_data>
+2. pip install python-telegram-bot twelvedata python-dotenv
+3. Redeploy / restart tras cambiar variables
 """
 
 import os
@@ -46,14 +55,14 @@ except ValueError:
     logging.error("❌ CHAT_ID debe ser un entero.")
     sys.exit(1)
 
-TWELVE_KEY = os.getenv("TWELVE_KEY", "").strip()
+# Aceptamos ambos nombres de variable para evitar crash
+TWELVE_KEY = os.getenv("TWELVE_KEY") or os.getenv("TWELVE_API_KEY", "").strip()
 if not all([TELEGRAM_TOKEN, CHAT_ID, TWELVE_KEY]):
-    logging.error("❌ Falta TELEGRAM_TOKEN, CHAT_ID o TWELVE_KEY.")
+    logging.error("❌ Falta TELEGRAM_TOKEN, CHAT_ID o TWELVE_API_KEY/TWELVE_KEY.")
     sys.exit(1)
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# Mapeo Binance -> Twelve Data (FOREX)
 PAIR_MAP = {
     "EURUSDT": "EUR/USD",
     "BRLUSDT": "USD/BRL",
@@ -84,9 +93,6 @@ ACTIVE_SIGNALS = load_signals()
 
 # ---------- VELAS 5-MIN (Twelve Data) ----------
 def fetch_last_two_closes(symbol: str):
-    """
-    Devuelve (actual, anterior) usando Twelve Data.
-    """
     td_symbol = PAIR_MAP.get(symbol)
     if not td_symbol:
         logging.warning("Par %s no mapeado para Twelve Data", symbol)
@@ -104,8 +110,7 @@ def fetch_last_two_closes(symbol: str):
         r.raise_for_status()
         data = r.json().get("values", [])
         if len(data) >= 2:
-            # Twelve Data devuelve más reciente primero
-            actual = Decimal(data[0]["close"])
+            actual   = Decimal(data[0]["close"])
             anterior = Decimal(data[1]["close"])
             return actual, anterior
     except Exception as e:
@@ -137,7 +142,7 @@ def build_close(pair, direction, entry, current, result):
 # ---------- TAREAS ----------
 def open_bets():
     with LOCK:
-        opened = {sig["pair"] for sig in ACTIVE_SIGNALS}
+        opened = {s["pair"] for s in ACTIVE_SIGNALS}
 
     for pair in OTC_PAIRS:
         if pair in opened:
@@ -148,17 +153,15 @@ def open_bets():
         direction = "ARRIBA" if actual > anterior else "ABAJO"
         msg = build_open(pair, direction, actual)
         try:
-            sent = bot.send_message(chat_id=CHAT_ID, text=msg)
+            sent = bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
             with LOCK:
-                ACTIVE_SIGNALS.append(
-                    {
-                        "pair": pair,
-                        "direction": direction,
-                        "entry": float(actual),
-                        "created_at": now_peru().isoformat(),
-                        "message_id": sent.message_id,
-                    }
-                )
+                ACTIVE_SIGNALS.append({
+                    "pair": pair,
+                    "direction": direction,
+                    "entry": float(actual),
+                    "created_at": now_peru().isoformat(),
+                    "message_id": sent.message_id,
+                })
                 save_signals()
             logging.info("📤 Apuesta abierta: %s %s", pair, direction)
         except Exception:
@@ -189,7 +192,10 @@ def close_bets():
         msg = build_close(sig["pair"], direction, sig["entry"], actual, result)
         try:
             bot.send_message(
-                chat_id=CHAT_ID, text=msg, reply_to_message_id=sig["message_id"]
+                chat_id=CHAT_ID,
+                text=msg,
+                reply_to_message_id=sig["message_id"],
+                parse_mode="Markdown",
             )
             with LOCK:
                 ACTIVE_SIGNALS.remove(sig)
@@ -210,7 +216,9 @@ def test():
     if request.args.get("token") != os.getenv("TEST_TOKEN", "test"):
         return "Unauthorized", 401
     threading.Thread(
-        target=lambda: bot.send_message(chat_id=CHAT_ID, text="🔔 Prueba OK"),
+        target=lambda: bot.send_message(
+            chat_id=CHAT_ID, text="🔔 Prueba OK", parse_mode="Markdown"
+        ),
         daemon=True,
     ).start()
     return "Enviado", 200
