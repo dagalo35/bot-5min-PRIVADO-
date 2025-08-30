@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Bot FX 5 min – Perú (Twelve Data)
-- Logs paso a paso
-- Filtro ATR + cambio mínimo
+Bot FX 5 min – Perú (Twelve Data, ahorro de créditos)
+- Cache 30 s
+- ATR solo si cambia ≥ 0.00010
+- 10 min de frecuencia
 - Anti-spam 5 min
 """
 
@@ -52,10 +53,7 @@ def now_peru():
     return datetime.now(TZ_PERU)
 
 def load_signals():
-    if os.path.exists(SIGNAL_FILE):
-        with open(SIGNAL_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    return []
+    return json.load(open(SIGNAL_FILE)) if os.path.exists(SIGNAL_FILE) else []
 
 def save_signals():
     with open(SIGNAL_FILE, "w", encoding="utf-8") as f:
@@ -63,13 +61,24 @@ def save_signals():
 
 ACTIVE_SIGNALS = load_signals()
 
+# Cache de precios 30 s
+CACHE_PRICE = {}
+CACHE_LOCK = threading.Lock()
+
 def get_price(symbol):
+    with CACHE_LOCK:
+        now_ts = int(time.time())
+        if symbol in CACHE_PRICE and now_ts - CACHE_PRICE[symbol][0] < 30:
+            return CACHE_PRICE[symbol][1]
+
     url = "https://api.twelvedata.com/price"
     params = {"symbol": symbol, "apikey": TWELVE_API_KEY}
     try:
         r = requests.get(url, params=params, timeout=10)
-        r.raise_for_status()
-        return float(r.json()["price"])
+        price = float(r.json()["price"])
+        with CACHE_LOCK:
+            CACHE_PRICE[symbol] = (int(time.time()), price)
+        return price
     except Exception as e:
         logging.warning("Twelve Data falló (%s): %s", symbol, e)
         return None
@@ -89,7 +98,7 @@ def get_atr5(symbol):
     except Exception:
         return None
 
-# ---------------- LÓGICA ----------------------
+# ---------------- MENSAJES --------------------
 def build_message(pair, direction, entry, tp, sl):
     icon = "🟢" if direction == "COMPRAR" else "🔴"
     now = now_peru().strftime("%H:%M:%S")
@@ -131,19 +140,28 @@ def send_signals():
                for sig in ACTIVE_SIGNALS):
             continue
 
-        logging.info("📡 Recibiendo datos para %s", pair)
         price = get_price(pair)
         if price is None:
+            logging.info("🚫 %s sin precio", pair)
+            continue
+
+        # ATR solo si el precio cambió ≥ 0.00010
+        last_price = next((s["entry"] for s in ACTIVE_SIGNALS if s["pair"] == pair), None)
+        if last_price and abs(price - last_price) < 0.00010:
+            logging.debug("%s sin cambio suficiente", pair)
             continue
 
         atr = get_atr5(pair)
-        if atr is None or atr < 0.00005:
-            logging.debug("Volatilidad baja %s", pair)
+        if atr is None:
+            logging.info("🚫 %s sin ATR", pair)
             continue
 
         min_change = 0.00015 if "JPY" not in pair else 0.015
+        logging.info("📊 %s | Precio=%.5f  ATR=%.6f  Umbral=%.6f",
+                     pair, price, atr, min_change)
+
         if atr < min_change:
-            logging.debug("Cambio insuficiente %s", pair)
+            logging.info("🚫 %s NO cumple: cambio insuficiente", pair)
             continue
 
         direction = "COMPRAR" if price > price - atr else "VENDER"
@@ -152,7 +170,7 @@ def send_signals():
         tp = round(entry + tick if direction == "COMPRAR" else entry - tick, 5)
         sl = round(entry - tick if direction == "COMPRAR" else entry + tick, 5)
 
-        logging.info("✅ Cumple parámetros para %s", pair)
+        logging.info("✅ %s CUMPLE: Precio=%.5f  ATR=%.6f", pair, price, atr)
         msg = build_message(pair, direction, entry, tp, sl)
         try:
             sent = bot.send_message(chat_id=CHAT_ID, text=msg)
@@ -210,9 +228,9 @@ def run_web():
 
 # ---------------- INICIO ----------------------
 if __name__ == "__main__":
-    logging.info("🚀 Bot arrancado con Twelve Data – hora Perú")
+    logging.info("🚀 Bot arrancado con Twelve Data – ahorro de créditos")
     threading.Thread(target=run_web, daemon=True).start()
-    schedule.every(5).minutes.do(send_signals)
+    schedule.every(10).minutes.do(send_signals)   # ← reduce frecuencia
     schedule.every(30).seconds.do(check_results)
     while True:
         schedule.run_pending()
