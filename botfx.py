@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Bot OTC 5 min – Perú (Finnhub)
+Bot OTC 5 min – Perú (Finnhub + velas 1-min)
 - Apuesta simple: arriba / abajo
 - Cierre automático a los 5 min
 - Mensaje final ganaste / perdiste
+- Dirección según última vela 1-min
 """
 
 import os
@@ -33,10 +34,10 @@ logging.basicConfig(
 )
 
 # ----------------- CONFIG -----------------
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-CHAT_ID        = int(os.getenv("CHAT_ID", "0"))
+TELEGRAM_TOKEN  = os.getenv("TELEGRAM_TOKEN", "").strip()
+CHAT_ID         = int(os.getenv("CHAT_ID", "0"))
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
-TEST_TOKEN     = os.getenv("TEST_TOKEN", "test")
+TEST_TOKEN      = os.getenv("TEST_TOKEN", "test")
 
 if not all([TELEGRAM_TOKEN, CHAT_ID, FINNHUB_API_KEY]):
     logging.error("❌ Faltan variables.")
@@ -44,7 +45,7 @@ if not all([TELEGRAM_TOKEN, CHAT_ID, FINNHUB_API_KEY]):
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# ✅ SÍMBOLOS VÁLIDOS EN FINNHUB (plan free) – sin forex
+# ✅ Símbolos válidos Finnhub (acciones + criptos) – plan free
 OTC_PAIRS = ["AAPL", "MSFT", "TSLA", "BTC", "ETH"]
 
 TZ_PERU   = ZoneInfo("America/Lima")
@@ -63,39 +64,32 @@ def save_signals():
 
 ACTIVE_SIGNALS = load_signals()
 
-# ----------------- CACHE ÚNICO -----------------
-CACHE = {"ts": 0, "prices": {}}
-CACHE_TTL = 30
-CACHE_LOCK = threading.Lock()
-
-def fetch_all_prices():
-    """Devuelve dict {symbol: price} desde Finnhub."""
-    with CACHE_LOCK:
-        now_ts = int(time.time())
-        if now_ts - CACHE["ts"] < CACHE_TTL:
-            return CACHE["prices"]
-
-    prices = {}
-    for symbol in OTC_PAIRS:
-        url = f"https://finnhub.io/api/v1/quote"
-        params = {"symbol": symbol, "token": FINNHUB_API_KEY}
-        try:
-            r = requests.get(url, params=params, timeout=10)
-            r.raise_for_status()
-            data = r.json()
-            if "c" in data and data["c"] is not None:
-                prices[symbol] = float(data["c"])
-            else:
-                logging.warning("Finnhub: símbolo no disponible %s", symbol)
-        except Exception as e:
-            logging.warning("Finnhub falló %s: %s", symbol, e)
-    with CACHE_LOCK:
-        CACHE["ts"] = now_ts
-        CACHE["prices"] = prices
-    return prices
-
-def get_price(symbol):
-    return fetch_all_prices().get(symbol)
+# ----------------- CANDLE 1-MIN -----------------
+def fetch_last_two_closes(symbol, resolution=1):
+    """
+    Devuelve (actual, anterior) de la vela más reciente vs. la anterior.
+    resolution=1 → 1 minuto.
+    """
+    to   = int(time.time())
+    url  = "https://finnhub.io/api/v1/stock/candle" if symbol not in ["BTC", "ETH"] else "https://finnhub.io/api/v1/crypto/symbol"
+    params = {
+        "symbol": symbol,
+        "resolution": resolution,
+        "from": to - 120,  # 2 min atrás
+        "to": to,
+        "token": FINNHUB_API_KEY
+    }
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        if data.get("s") == "ok":
+            closes = data["c"]
+            if len(closes) >= 2:
+                return closes[-1], closes[-2]
+    except Exception as e:
+        logging.warning("Finnhub candle falló %s: %s", symbol, e)
+    return None, None
 
 # ----------------- MENSAJES -----------------
 def build_open(pair, direction, entry):
@@ -116,19 +110,18 @@ def build_close(pair, direction, entry, current, result):
 
 # ----------------- TAREAS -----------------
 def open_bets():
-    prices = fetch_all_prices()
     for pair in OTC_PAIRS:
-        price = prices.get(pair)
-        if price is None:
+        actual, anterior = fetch_last_two_closes(pair)
+        if actual is None or anterior is None:
             continue
-        direction = "ARRIBA" if (hash(pair) % 2) else "ABAJO"
-        msg = build_open(pair, direction, price)
+        direction = "ARRIBA" if actual > anterior else "ABAJO"
+        msg = build_open(pair, direction, actual)
         try:
             sent = bot.send_message(chat_id=CHAT_ID, text=msg)
             ACTIVE_SIGNALS.append({
                 "pair": pair,
                 "direction": direction,
-                "entry": price,
+                "entry": actual,
                 "created_at": now_peru().isoformat(),
                 "message_id": sent.message_id
             })
@@ -138,32 +131,28 @@ def open_bets():
             logging.exception("❌ Error enviando apuesta")
 
 def close_bets():
-    prices = fetch_all_prices()
-    still_open = []
-    for sig in ACTIVE_SIGNALS:
+    for sig in ACTIVE_SIGNALS[:]:
         elapsed = (now_peru() - datetime.fromisoformat(sig["created_at"]).replace(tzinfo=TZ_PERU)).total_seconds()
         if elapsed < 300:
-            still_open.append(sig)
             continue
 
-        current = prices.get(sig["pair"])
-        if current is None:
-            still_open.append(sig)
+        actual, _ = fetch_last_two_closes(sig["pair"])
+        if actual is None:
             continue
 
         direction = sig["direction"]
         result = (
             "GANASTE"
-            if ((direction == "ARRIBA" and current > sig["entry"]) or
-                (direction == "ABAJO"  and current < sig["entry"]))
+            if ((direction == "ARRIBA" and actual > sig["entry"]) or
+                (direction == "ABAJO"  and actual < sig["entry"]))
             else "PERDISTE"
         )
-        msg = build_close(sig["pair"], direction, sig["entry"], current, result)
+        msg = build_close(sig["pair"], direction, sig["entry"], actual, result)
         try:
             bot.send_message(chat_id=CHAT_ID, text=msg, reply_to_message_id=sig["message_id"])
+            ACTIVE_SIGNALS.remove(sig)
         except Exception:
             logging.exception("❌ Error cerrando")
-    ACTIVE_SIGNALS[:] = still_open
     save_signals()
 
 # ----------------- FLASK -----------------
@@ -186,7 +175,7 @@ def run_web():
 
 # ----------------- INICIO -----------------
 if __name__ == "__main__":
-    logging.info("🚀 Bot OTC 5 min – Perú (Finnhub)")
+    logging.info("🚀 Bot OTC 5 min – Perú (Finnhub + velas)")
     threading.Thread(target=run_web, daemon=True).start()
     schedule.every(5).minutes.do(open_bets)
     schedule.every(30).seconds.do(close_bets)
