@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Bot OTC 5 min – Perú (Twelve Data + divisas OTC)
+Bot OTC 5 min – Perú (Binance + divisas spot)
 - Apuesta simple: arriba / abajo
 - Cierre automático a los 5 min
-- Dirección según última vela 1-min
+- Dirección según última vela 5-min
 """
 
 import os
@@ -35,17 +35,16 @@ logging.basicConfig(
 # ----------------- CONFIG -----------------
 TELEGRAM_TOKEN  = os.getenv("TELEGRAM_TOKEN", "").strip()
 CHAT_ID         = int(os.getenv("CHAT_ID", "0"))
-TWELVE_API_KEY  = os.getenv("TWELVE_API_KEY", "").strip()
 TEST_TOKEN      = os.getenv("TEST_TOKEN", "test")
 
-if not all([TELEGRAM_TOKEN, CHAT_ID, TWELVE_API_KEY]):
+if not all([TELEGRAM_TOKEN, CHAT_ID]):
     logging.error("❌ Faltan variables.")
     sys.exit(1)
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# ✅ Divisas OTC disponibles en Twelve Data (plan free)
-OTC_PAIRS = ["EUR/USD", "PEN/USD", "USD/BRL"]
+# ✅ Pares spot Binance (volátiles, gratis)
+OTC_PAIRS = ["EURUSDT", "BRLUSDT", "PENUSDT"]
 
 TZ_PERU   = ZoneInfo("America/Lima")
 SIGNAL_FILE = "otc_signals.json"
@@ -63,28 +62,20 @@ def save_signals():
 
 ACTIVE_SIGNALS = load_signals()
 
-# ----------------- VELAS 1-MIN -----------------
-def fetch_last_two_closes(symbol, resolution=1):
-    """
-    Devuelve (actual, anterior) usando Twelve Data (candles 1-min).
-    """
-    url = "https://api.twelvedata.com/time_series"
-    params = {
-        "symbol": symbol,
-        "interval": f"{resolution}min",
-        "apikey": TWELVE_API_KEY,
-        "outputsize": 2
-    }
+# ----------------- VELAS 5-MIN (Binance) -----------------
+def fetch_last_two_closes(symbol):
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol, "interval": "5m", "limit": 2}
     try:
         r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
-        if data.get("status") == "ok" and len(data["values"]) >= 2:
-            actual   = float(data["values"][0]["close"])
-            anterior = float(data["values"][1]["close"])
+        if len(data) >= 2:
+            actual   = float(data[-1][4])  # close
+            anterior = float(data[-2][4])  # close
             return actual, anterior
     except Exception as e:
-        logging.warning("Twelve Data candle falló %s: %s", symbol, e)
+        logging.warning("Binance candle falló %s: %s", symbol, e)
     return None, None
 
 # ----------------- MENSAJES -----------------
@@ -171,7 +162,7 @@ def run_web():
 
 # ----------------- INICIO -----------------
 if __name__ == "__main__":
-    logging.info("🚀 Bot OTC 5 min – Perú (Twelve Data + divisas OTC)")
+    logging.info("🚀 Bot OTC 5 min – Perú (Binance + divisas spot)")
     threading.Thread(target=run_web, daemon=True).start()
     schedule.every(5).minutes.do(open_bets)
     schedule.every(30).seconds.do(close_bets)
