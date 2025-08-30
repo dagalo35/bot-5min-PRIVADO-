@@ -1,20 +1,18 @@
 """
 Bot FX 5 min – Perú (v4-light + Twelve Data)
-Loop interno / sin cron externo
+Worker / sin Flask / sin cron externo
 Compatible con python-telegram-bot 13.x
 """
 import os
 import json
 import time
 import logging
-import threading
 import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import requests
 import schedule
-from flask import Flask, request
 from telegram import Bot
 from dotenv import load_dotenv
 
@@ -29,7 +27,6 @@ logging.basicConfig(
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN", "").strip()
 CHAT_ID          = int(os.getenv("CHAT_ID", "0"))
 TWELVE_API_KEY   = os.getenv("TWELVE_API_KEY", "").strip()
-TEST_TOKEN       = os.getenv("TEST_TOKEN", "test")
 
 logging.info("TOKEN: %s  CHAT_ID: %s  TWELVE_KEY: %s",
              bool(TELEGRAM_TOKEN), bool(CHAT_ID), bool(TWELVE_API_KEY))
@@ -201,45 +198,9 @@ def check_results():
         ACTIVE_S[:] = still
         save()
 
-# ---------------- FLASK -----------------------
-app = Flask(__name__)
-
-@app.route("/")
-def ok():
-    return "ok", 200
-
-@app.route("/test")
-def test():
-    token = request.args.get("token")
-    if token != TEST_TOKEN:
-        return "Unauthorized", 401
-    threading.Thread(
-        target=lambda: bot.send_message(chat_id=CHAT_ID, text="🔔 Prueba OK")
-    ).start()
-    return "Enviado", 200
-
-@app.route("/status")
-def status():
-    token = request.args.get("token")
-    if token != TEST_TOKEN:
-        return "Unauthorized", 401
-    try:
-        closes = get_price_series("EUR/USD", count=5)
-        if closes:
-            return {"status": "ok", "last_close": closes[-1]}, 200
-        else:
-            return {"status": "error", "message": "No data from Twelve Data"}, 200
-    except Exception as e:
-        return {"status": "error", "message": str(e)}, 500
-
-def run_web():
-    port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, threaded=True, debug=False)
-
 # ---------------- MAIN ------------------------
 if __name__ == "__main__":
-    logging.info("🚀 Bot FX v4-light + Twelve Data arrancado")
-    threading.Thread(target=run_web, daemon=True).start()
+    logging.info("🚀 Bot FX v4-light + Twelve Data arrancado (Worker)")
     # Programa las tareas internas
     schedule.every(5).minutes.do(send_signals)
     schedule.every(30).seconds.do(check_results)
