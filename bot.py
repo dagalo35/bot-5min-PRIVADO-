@@ -191,7 +191,7 @@ def check_results():
             )
             bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown",
                              reply_to_message_id=sig["message_id"])
-        except Exception:
+        except Exception as e:
             logging.exception("Error verificando resultado")
             still.append(sig)
 
