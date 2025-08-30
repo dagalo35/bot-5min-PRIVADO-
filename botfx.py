@@ -45,7 +45,7 @@ if not all([TELEGRAM_TOKEN, CHAT_ID, TWELVE_API_KEY]):
 bot = Bot(token=TELEGRAM_TOKEN)
 
 # ✅ SÍMBOLOS VÁLIDOS PARA PLAN GRATUITO
-OTC_PAIRS = ["BTC/USD", "ETH/USD", "AAPL", "MSFT", "EUR/USD"]
+OTC_PAIRS = ["AAPL", "MSFT", "TSLA", "EUR/USD", "USD/JPY"]
 
 TZ_PERU   = ZoneInfo("America/Lima")
 SIGNAL_FILE = "otc_signals.json"
