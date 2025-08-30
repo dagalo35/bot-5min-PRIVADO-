@@ -80,13 +80,9 @@ def atr(closes, n=14):
     return sma(trs, n)
 
 def get_price_series(symbol, resolution=5, count=21):
-    """
-    Finnhub solo entrega 1-min, 5-min, 15-min, 30-min, 60-min, D, W, M
-    Para 5-min usamos resolution=5
-    """
     url = "https://finnhub.io/api/v1/forex/candle"
     params = {
-        "symbol": symbol,          # Ej: "OANDA:EUR_USD"
+        "symbol": symbol,
         "resolution": resolution,
         "count": count,
         "token": FINNHUB_API_KEY
@@ -106,7 +102,6 @@ def send_signals():
     dt = now_peru()
     logging.info("Procesando señales – hora %s", dt.strftime("%H:%M:%S"))
 
-    # Pares disponibles en Finnhub (prefijo OANDA:)
     for pair in ["OANDA:EUR_USD", "OANDA:GBP_USD", "OANDA:AUD_USD", "OANDA:USD_JPY"]:
         symbol = pair.replace("OANDA:", "").replace("_", "/")
         with lock:
@@ -163,39 +158,44 @@ def send_signals():
             logging.exception("Error enviando señal")
 
 def check_results():
+    now = now_peru()
     still = []
     with lock:
-        now = now_peru()
-        for sig in ACTIVE_S:
-            if (now - datetime.fromisoformat(sig["created_at"])).total_seconds() < 300:
-                still.append(sig)
-                continue
+        signals_to_check = list(ACTIVE_S)
 
-            pair = "OANDA:" + sig["pair"].replace("/", "_")
-            url = "https://finnhub.io/api/v1/quote"
-            params = {"symbol": pair, "token": FINNHUB_API_KEY}
-            try:
-                r = requests.get(url, params=params, timeout=10)
-                r.raise_for_status()
-                data = r.json()
-                current = float(data["c"])
-                result = "✅ GANADA" if (
-                    (sig["direction"] == "BUY" and current >= sig["tp"]) or
-                    (sig["direction"] == "SELL" and current <= sig["tp"])
-                ) else "❌ PERDIDA" if (
-                    (sig["direction"] == "BUY" and current <= sig["sl"]) or
-                    (sig["direction"] == "SELL" and current >= sig["sl"])
-                ) else "⚖️ EMPATE"
-                msg = (
-                    f"📊 **RESULTADO {sig['pair']}**\n"
-                    f"⏰ Hora: {now_peru().strftime('%H:%M:%S')}\n"
-                    f"📍 Precio: {current:.5f}\n"
-                    f"{result}"
-                )
-                bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown",
-                                 reply_to_message_id=sig["message_id"])
-            except Exception:
-                still.append(sig)
+    for sig in signals_to_check:
+        if (now - datetime.fromisoformat(sig["created_at"])).total_seconds() < 300:
+            still.append(sig)
+            continue
+
+        pair = "OANDA:" + sig["pair"].replace("/", "_")
+        url = "https://finnhub.io/api/v1/quote"
+        params = {"symbol": pair, "token": FINNHUB_API_KEY}
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            current = float(data["c"])
+            result = "✅ GANADA" if (
+                (sig["direction"] == "BUY" and current >= sig["tp"]) or
+                (sig["direction"] == "SELL" and current <= sig["tp"])
+            ) else "❌ PERDIDA" if (
+                (sig["direction"] == "BUY" and current <= sig["sl"]) or
+                (sig["direction"] == "SELL" and current >= sig["sl"])
+            ) else "⚖️ EMPATE"
+            msg = (
+                f"📊 **RESULTADO {sig['pair']}**\n"
+                f"⏰ Hora: {now_peru().strftime('%H:%M:%S')}\n"
+                f"📍 Precio: {current:.5f}\n"
+                f"{result}"
+            )
+            bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown",
+                             reply_to_message_id=sig["message_id"])
+        except Exception:
+            logging.exception("Error verificando resultado")
+            still.append(sig)
+
+    with lock:
         ACTIVE_S[:] = still
         save()
 
@@ -215,6 +215,20 @@ def test():
         target=lambda: bot.send_message(chat_id=CHAT_ID, text="🔔 Prueba OK")
     ).start()
     return "Enviado", 200
+
+@app.route("/status")
+def status():
+    token = request.args.get("token")
+    if token != TEST_TOKEN:
+        return "Unauthorized", 401
+    try:
+        closes = get_price_series("OANDA:EUR_USD", count=5)
+        if closes:
+            return {"status": "ok", "last_close": closes[-1]}, 200
+        else:
+            return {"status": "error", "message": "No data from Finnhub"}, 200
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
 
 def run_web():
     port = int(os.getenv("PORT", 5000))
