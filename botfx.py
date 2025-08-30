@@ -43,7 +43,10 @@ if not all([TELEGRAM_TOKEN, CHAT_ID, TWELVE_API_KEY]):
     sys.exit(1)
 
 bot = Bot(token=TELEGRAM_TOKEN)
-OTC_PAIRS = ["US30", "US100", "DE30", "BTCUSD", "ETHUSD"]
+
+# ✅ SÍMBOLOS VÁLIDOS PARA PLAN GRATUITO
+OTC_PAIRS = ["BTC/USD", "ETH/USD", "AAPL", "MSFT", "EUR/USD"]
+
 TZ_PERU   = ZoneInfo("America/Lima")
 SIGNAL_FILE = "otc_signals.json"
 
@@ -79,7 +82,6 @@ def fetch_all_prices():
         r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
-        # La API devuelve lista si >1 símbolo, dict si es 1
         if isinstance(data, dict):
             data = [data]
         prices = {item["symbol"]: float(item["close"]) for item in data}
@@ -118,7 +120,6 @@ def open_bets():
         price = prices.get(pair)
         if price is None:
             continue
-        # --- Lógica de dirección aleatoria (puedes cambiarla) ---
         direction = "ARRIBA" if (hash(pair) % 2) else "ABAJO"
         msg = build_open(pair, direction, price)
         try:
@@ -184,7 +185,7 @@ def run_web():
 
 # ----------------- INICIO -----------------
 if __name__ == "__main__":
-    logging.info("🚀 Bot OTC 5 min – Perú (optimizado)")
+    logging.info("🚀 Bot OTC 5 min – Perú (símbolos válidos)")
     threading.Thread(target=run_web, daemon=True).start()
     schedule.every(5).minutes.do(open_bets)
     schedule.every(30).seconds.do(close_bets)
