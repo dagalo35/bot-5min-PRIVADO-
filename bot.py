@@ -1,5 +1,6 @@
 """
 Bot FX 5 min – Perú (v4-light + Twelve Data)
+Loop interno / sin cron externo
 Compatible con python-telegram-bot 13.x
 """
 import os
@@ -12,6 +13,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import requests
+import schedule
 from flask import Flask, request
 from telegram import Bot
 from dotenv import load_dotenv
@@ -109,7 +111,7 @@ def send_signals():
                 logging.debug("%s ya tiene señal activa", symbol)
                 continue
 
-        closes = get_price_series(pair)
+        closes = get_price_series(symbol)
         if not closes or len(closes) < 15:
             logging.debug("Datos insuficientes para %s", symbol)
             continue
@@ -126,7 +128,7 @@ def send_signals():
         if not direction:
             continue
 
-        tick = 0.01 if "JPY" in pair else 0.0001
+        tick = 0.01 if "JPY" in symbol else 0.0001
         tp = round((current + atr_val * 1.5 * (1 if direction == "BUY" else -1)) / tick) * tick
         sl = round((current - atr_val * 1.0 * (1 if direction == "BUY" else -1)) / tick) * tick
 
@@ -230,14 +232,6 @@ def status():
     except Exception as e:
         return {"status": "error", "message": str(e)}, 500
 
-@app.route("/trigger")
-def trigger():
-    token = request.args.get("token")
-    if token != TEST_TOKEN:
-        return "Unauthorized", 401
-    threading.Thread(target=send_signals).start()
-    return "Triggered", 200
-
 def run_web():
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port, threaded=True, debug=False)
@@ -246,4 +240,13 @@ def run_web():
 if __name__ == "__main__":
     logging.info("🚀 Bot FX v4-light + Twelve Data arrancado")
     threading.Thread(target=run_web, daemon=True).start()
-    # Sin schedule: usa cron externo para llamar /trigger
+    # Programa las tareas internas
+    schedule.every(5).minutes.do(send_signals)
+    schedule.every(30).seconds.do(check_results)
+    while True:
+        try:
+            schedule.run_pending()
+            time.sleep(1)
+        except Exception as e:
+            logging.exception("Error en el loop principal: %s", e)
+            time.sleep(5)
