@@ -20,7 +20,6 @@ from telegram import Bot
 from dotenv import load_dotenv
 
 load_dotenv()
-
 logging.basicConfig(
     stream=sys.stdout,
     level=logging.INFO,
@@ -133,16 +132,22 @@ def send_signals():
         dt = now_peru()
         logging.info("Ejecutando send_signals – %s", dt.strftime("%H:%M:%S"))
         for pair in ["EUR/USD", "GBP/USD", "AUD/USD", "USD/JPY"]:
+            logging.info("Mandando señal para %s", pair)
             with lock:
                 if any(s["pair"] == pair for s in ACTIVE_S):
+                    logging.debug("%s ya tiene señal activa", pair)
                     continue
+            logging.info("Recibiendo datos de %s", pair)
             closes = get_price_series(pair)
             if not closes or len(closes) < 15:
+                logging.debug("Datos insuficientes para %s", pair)
                 continue
             current = Decimal(str(closes[-1]))
+            logging.info("Verificando parámetros para %s", pair)
             rsi_val = rsi(closes)
             atr_val = atr(closes)
             if rsi_val is None or atr_val is None:
+                logging.debug("Indicadores nulos para %s", pair)
                 continue
 
             direction = "BUY" if rsi_val < 30 else "SELL" if rsi_val > 70 else None
@@ -164,6 +169,7 @@ def send_signals():
                 f"❌ SL: {sl:.5f}\n"
                 f"📈 RSI: {rsi_val:.1f}"
             )
+            logging.info("Enviando al bot: %s %s", pair, direction)
             try:
                 m = bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
                 with lock:
