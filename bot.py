@@ -1,5 +1,5 @@
 """
-Bot FX 5 min – Perú (v4-light + Finnhub)
+Bot FX 5 min – Perú (v4-light + Twelve Data)
 Compatible con python-telegram-bot 13.x
 """
 import os
@@ -26,13 +26,13 @@ logging.basicConfig(
 # ---------------- CONFIG ----------------------
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN", "").strip()
 CHAT_ID          = int(os.getenv("CHAT_ID", "0"))
-FINNHUB_API_KEY  = os.getenv("FINNHUB_API_KEY", "").strip()
+TWELVE_API_KEY   = os.getenv("TWELVE_API_KEY", "").strip()
 TEST_TOKEN       = os.getenv("TEST_TOKEN", "test")
 
-logging.info("TOKEN: %s  CHAT_ID: %s  FINNHUB_KEY: %s",
-             bool(TELEGRAM_TOKEN), bool(CHAT_ID), bool(FINNHUB_API_KEY))
+logging.info("TOKEN: %s  CHAT_ID: %s  TWELVE_KEY: %s",
+             bool(TELEGRAM_TOKEN), bool(CHAT_ID), bool(TWELVE_API_KEY))
 
-if not all([TELEGRAM_TOKEN, CHAT_ID, FINNHUB_API_KEY]):
+if not all([TELEGRAM_TOKEN, CHAT_ID, TWELVE_API_KEY]):
     logging.error("Faltan variables de entorno")
     sys.exit(1)
 
@@ -78,22 +78,23 @@ def atr(closes, n=14):
     trs = [abs(c - p) for p, c in zip(closes, closes[1:])]
     return sma(trs, n)
 
-def get_price_series(symbol, resolution=5, count=21):
-    url = "https://finnhub.io/api/v1/forex/candle"
+def get_price_series(symbol, interval="5min", count=21):
+    url = "https://api.twelvedata.com/time_series"
     params = {
         "symbol": symbol,
-        "resolution": resolution,
-        "count": count,
-        "token": FINNHUB_API_KEY
+        "interval": interval,
+        "outputsize": count,
+        "apikey": TWELVE_API_KEY
     }
     try:
         r = requests.get(url, params=params, timeout=20)
         r.raise_for_status()
         data = r.json()
-        if "c" in data and data["c"]:
-            return data["c"][-count:]
+        if "values" in data and data["values"]:
+            closes = [float(d["close"]) for d in data["values"]][::-1]
+            return closes[-count:]
     except Exception as e:
-        logging.warning("Finnhub falló para %s: %s", symbol, e)
+        logging.warning("Twelve Data falló para %s: %s", symbol, e)
     return None
 
 # ---------------- LOGIC -----------------------
@@ -101,8 +102,8 @@ def send_signals():
     dt = now_peru()
     logging.info("Ejecutando send_signals – hora %s", dt.strftime("%H:%M:%S"))
 
-    for pair in ["OANDA:EUR_USD", "OANDA:GBP_USD", "OANDA:AUD_USD", "OANDA:USD_JPY"]:
-        symbol = pair.replace("OANDA:", "").replace("_", "/")
+    for pair in ["EUR/USD", "GBP/USD", "AUD/USD", "USD/JPY"]:
+        symbol = pair
         with lock:
             if any(s["pair"] == symbol for s in ACTIVE_S):
                 logging.debug("%s ya tiene señal activa", symbol)
@@ -167,14 +168,14 @@ def check_results():
             still.append(sig)
             continue
 
-        pair = "OANDA:" + sig["pair"].replace("/", "_")
-        url = "https://finnhub.io/api/v1/quote"
-        params = {"symbol": pair, "token": FINNHUB_API_KEY}
+        pair = sig["pair"]
+        url = "https://api.twelvedata.com/quote"
+        params = {"symbol": pair, "apikey": TWELVE_API_KEY}
         try:
             r = requests.get(url, params=params, timeout=10)
             r.raise_for_status()
             data = r.json()
-            current = float(data["c"])
+            current = float(data["close"])
             result = "✅ GANADA" if (
                 (sig["direction"] == "BUY" and current >= sig["tp"]) or
                 (sig["direction"] == "SELL" and current <= sig["tp"])
@@ -221,11 +222,11 @@ def status():
     if token != TEST_TOKEN:
         return "Unauthorized", 401
     try:
-        closes = get_price_series("OANDA:EUR_USD", count=5)
+        closes = get_price_series("EUR/USD", count=5)
         if closes:
             return {"status": "ok", "last_close": closes[-1]}, 200
         else:
-            return {"status": "error", "message": "No data from Finnhub"}, 200
+            return {"status": "error", "message": "No data from Twelve Data"}, 200
     except Exception as e:
         return {"status": "error", "message": str(e)}, 500
 
@@ -243,7 +244,6 @@ def run_web():
 
 # ---------------- MAIN ------------------------
 if __name__ == "__main__":
-    logging.info("🚀 Bot FX v4-light + Finnhub arrancado")
+    logging.info("🚀 Bot FX v4-light + Twelve Data arrancado")
     threading.Thread(target=run_web, daemon=True).start()
-    # NO usamos schedule en Railway
-    # Usa cron externo para llamar /trigger cada 5 minutos
+    # Sin schedule: usa cron externo para llamar /trigger
