@@ -65,7 +65,6 @@ bot = Bot(token=TELEGRAM_TOKEN)
 
 PAIR_MAP = {
     "EURUSDT": "EUR/USD",
-    "BRLUSDT": "USD/BRL",
     "PENUSDT": "USD/PEN",
 }
 OTC_PAIRS = list(PAIR_MAP.keys())
