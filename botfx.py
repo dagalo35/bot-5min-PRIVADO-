@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bot OTC 5 min – Perú (Finnhub + activos volátiles)
+Bot OTC 5 min – Perú (Twelve Data + divisas OTC)
 - Apuesta simple: arriba / abajo
 - Cierre automático a los 5 min
 - Dirección según última vela 1-min
@@ -35,17 +35,17 @@ logging.basicConfig(
 # ----------------- CONFIG -----------------
 TELEGRAM_TOKEN  = os.getenv("TELEGRAM_TOKEN", "").strip()
 CHAT_ID         = int(os.getenv("CHAT_ID", "0"))
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
+TWELVE_API_KEY  = os.getenv("TWELVE_API_KEY", "").strip()
 TEST_TOKEN      = os.getenv("TEST_TOKEN", "test")
 
-if not all([TELEGRAM_TOKEN, CHAT_ID, FINNHUB_API_KEY]):
+if not all([TELEGRAM_TOKEN, CHAT_ID, TWELVE_API_KEY]):
     logging.error("❌ Faltan variables.")
     sys.exit(1)
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# ✅ Activos volátiles (Finnhub free): acciones y criptos
-OTC_PAIRS = ["NVDA", "PLTR", "GME", "ETH", "BTC"]
+# ✅ Divisas OTC disponibles en Twelve Data (plan free)
+OTC_PAIRS = ["EUR/USD", "PEN/USD", "USD/BRL"]
 
 TZ_PERU   = ZoneInfo("America/Lima")
 SIGNAL_FILE = "otc_signals.json"
@@ -66,40 +66,32 @@ ACTIVE_SIGNALS = load_signals()
 # ----------------- VELAS 1-MIN -----------------
 def fetch_last_two_closes(symbol, resolution=1):
     """
-    Devuelve (actual, anterior) de la vela más reciente vs. la anterior.
-    resolution=1 → 1 minuto.
+    Devuelve (actual, anterior) usando Twelve Data (candles 1-min).
     """
-    to   = int(time.time())
-    # Endpoint según tipo
-    if symbol in ["BTC", "ETH"]:
-        url = "https://finnhub.io/api/v1/crypto/candle"
-    else:
-        url = "https://finnhub.io/api/v1/stock/candle"
-
+    url = "https://api.twelvedata.com/time_series"
     params = {
         "symbol": symbol,
-        "resolution": resolution,
-        "from": to - 120,  # 2 min atrás
-        "to": to,
-        "token": FINNHUB_API_KEY
+        "interval": f"{resolution}min",
+        "apikey": TWELVE_API_KEY,
+        "outputsize": 2
     }
     try:
         r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
-        if data.get("s") == "ok":
-            closes = data["c"]
-            if len(closes) >= 2:
-                return closes[-1], closes[-2]
+        if data.get("status") == "ok" and len(data["values"]) >= 2:
+            actual   = float(data["values"][0]["close"])
+            anterior = float(data["values"][1]["close"])
+            return actual, anterior
     except Exception as e:
-        logging.warning("Finnhub candle falló %s: %s", symbol, e)
+        logging.warning("Twelve Data candle falló %s: %s", symbol, e)
     return None, None
 
 # ----------------- MENSAJES -----------------
 def build_open(pair, direction, entry):
     icon = "🚀" if direction == "ARRIBA" else "📉"
     now  = now_peru().strftime("%H:%M:%S")
-    return f"{icon} **APUESTA {pair}**\n⏰ Hora: {now}\n📈 Dirección: {direction}\n💰 Entrada: {entry:.2f}"
+    return f"{icon} **APUESTA {pair}**\n⏰ Hora: {now}\n📈 Dirección: {direction}\n💰 Entrada: {entry:.4f}"
 
 def build_close(pair, direction, entry, current, result):
     icon = "🤑" if result == "GANASTE" else "😞"
@@ -107,8 +99,8 @@ def build_close(pair, direction, entry, current, result):
         f"{icon} **RESULTADO {pair}**\n"
         f"⏰ Cierre: {now_peru().strftime('%H:%M:%S')}\n"
         f"📈 Dirección: {direction}\n"
-        f"💰 Entrada: {entry:.2f}\n"
-        f"📍 Cierre: {current:.2f}\n"
+        f"💰 Entrada: {entry:.4f}\n"
+        f"📍 Cierre: {current:.4f}\n"
         f"**{result}**"
     )
 
@@ -179,7 +171,7 @@ def run_web():
 
 # ----------------- INICIO -----------------
 if __name__ == "__main__":
-    logging.info("🚀 Bot OTC 5 min – Perú (Finnhub + volátiles)")
+    logging.info("🚀 Bot OTC 5 min – Perú (Twelve Data + divisas OTC)")
     threading.Thread(target=run_web, daemon=True).start()
     schedule.every(5).minutes.do(open_bets)
     schedule.every(30).seconds.do(close_bets)
