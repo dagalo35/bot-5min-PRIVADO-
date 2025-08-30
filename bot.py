@@ -12,7 +12,6 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import requests
-import schedule
 from flask import Flask, request
 from telegram import Bot
 from dotenv import load_dotenv
@@ -100,7 +99,7 @@ def get_price_series(symbol, resolution=5, count=21):
 # ---------------- LOGIC -----------------------
 def send_signals():
     dt = now_peru()
-    logging.info("Procesando señales – hora %s", dt.strftime("%H:%M:%S"))
+    logging.info("Ejecutando send_signals – hora %s", dt.strftime("%H:%M:%S"))
 
     for pair in ["OANDA:EUR_USD", "OANDA:GBP_USD", "OANDA:AUD_USD", "OANDA:USD_JPY"]:
         symbol = pair.replace("OANDA:", "").replace("_", "/")
@@ -230,6 +229,14 @@ def status():
     except Exception as e:
         return {"status": "error", "message": str(e)}, 500
 
+@app.route("/trigger")
+def trigger():
+    token = request.args.get("token")
+    if token != TEST_TOKEN:
+        return "Unauthorized", 401
+    threading.Thread(target=send_signals).start()
+    return "Triggered", 200
+
 def run_web():
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port, threaded=True, debug=False)
@@ -238,8 +245,5 @@ def run_web():
 if __name__ == "__main__":
     logging.info("🚀 Bot FX v4-light + Finnhub arrancado")
     threading.Thread(target=run_web, daemon=True).start()
-    schedule.every(5).minutes.do(send_signals)
-    schedule.every(30).seconds.do(check_results)
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+    # NO usamos schedule en Railway
+    # Usa cron externo para llamar /trigger cada 5 minutos
